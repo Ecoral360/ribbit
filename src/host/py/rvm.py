@@ -155,7 +155,7 @@ primitives = [
 def get_code():
  x=get_byte()-35
  return 57 if x<0 else x
- 
+
 def get_int(n):
  x=get_code()
  n*=46
@@ -193,7 +193,7 @@ while 1:
  d=0
  op=0
  while 1:
-  d=[20,30,0,10,11,4][op]
+  d=[20,30,0,10,11,4][op
   if n<=2+d:break
   n-=d+3;op+=1
  if x>90:
