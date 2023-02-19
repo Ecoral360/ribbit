@@ -23,10 +23,11 @@ value to represent foreign objects.
 
 ### New RVM standard primitives to work with Foreign Objects
 
-There are a couple of new primitives that need to be integrated directly into the RVM standard to make the integration
+There are 2 new primitives that need to be integrated directly into the RVM standard to make the integration
 of Foreign Objects possible:
 
-- `foreign`: `rib(pop(), ANY, 6)`
+- (20) `foreign`: r←rib(pop(), **anything**, 6)
+- (21) `foreign?`: x←pop();r←bool(x is foreign)
 
 ## Integration with regular objects
 
