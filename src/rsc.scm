@@ -769,60 +769,61 @@
           (loop (cdr prims) i result)))
       (reverse result))))
 
-(define (comp-exprs-with-exports-and-prims exprs primitives exports)
-  (set! current-primitives primitives)
-  (let* ((expansion
-          (expand-begin exprs))
-         (live
-          (liveness-analysis expansion exports))
-         (prims
-           (if current-primitives
-             (let ((live-primitives (used-primitives current-primitives live)))
-               (set-primitive-order live-primitives current-primitives))
-             #f))
-         (exports
-          (or exports
-              (map (lambda (v)
-                     (let ((var (car v)))
-                       (cons var var)))
-                   live))))
-    (cons
-     (make-procedure
-      (rib 0 ;; 0 parameters
-           0
-           (comp (make-ctx '() live exports)
-                 expansion
-                 tail))
-      '())
-     (cons exports
-           prims))))
-
 (define (compile-program verbosity parsed-vm program)
   (let* ((exprs-and-exports
-          (extract-exports program))
+           (extract-exports program))
          (exprs
-          (car exprs-and-exports))
+           (car exprs-and-exports))
+         (exprs 
+           (if (pair? exprs) exprs (cons #f '())))
          (exports
-          (cdr exprs-and-exports))
+           (exports->alist (cdr exprs-and-exports)))
          (primitives
            (and parsed-vm (extract-primitives parsed-vm)))
+         (_ (set! current-primitives primitives)) ;; hack to propagate the current-primitives to expand-begin
+         (expansion
+           (expand-begin exprs))
+         (live
+           (liveness-analysis expansion exports))
+         (prims
+           (if current-primitives
+             (let ((live-primitives 
+                     (used-primitives 
+                       current-primitives 
+                       (append 
+                         (map (lambda (x) (cons x #f)) (extract-use-feature parsed-vm '()))
+                         live))))
+               (set-primitive-order live-primitives current-primitives))
+             default-primitives))
+         (exports
+           (or exports
+               (map (lambda (v)
+                      (let ((var (car v)))
+                        (cons var var)))
+                    live)))
          (proc-exports-and-prims
-          (comp-exprs-with-exports-and-prims
-           (if (pair? exprs) exprs (cons #f '()))
-           primitives
-           (exports->alist exports))))
+           (cons
+             (make-procedure
+               (rib 0 ;; 0 parameters
+                    0
+                    (comp (make-ctx '() live exports)
+                          expansion
+                          tail))
+               '())
+             (cons exports
+                   prims))))
     (if (>= verbosity 2)
-        (begin
-          (display "*** RVM code:\n")
-          (pp (car proc-exports-and-prims))))
+      (begin
+        (display "*** RVM code:\n")
+        (pp (car proc-exports-and-prims))))
     (if (>= verbosity 3)
-        (begin
-          (display "*** exports:\n")
-          (pp (cadr proc-exports-and-prims))))
+      (begin
+        (display "*** exports:\n")
+        (pp (cadr proc-exports-and-prims))))
     (if (>= verbosity 2)
-        (begin
-          (display "*** Live primitives:\n")
-          (pp (cddr proc-exports-and-prims))))
+      (begin
+        (display "*** Live primitives:\n")
+        (pp (cddr proc-exports-and-prims))))
     proc-exports-and-prims))
 
 ;;;----------------------------------------------------------------------------
@@ -944,7 +945,7 @@
 
                 ((eqv? (car expr) 'define-primitive)
                  (if (not current-primitives)
-                   (error "Cannot use define-primitive while target a non-modifiable host")
+                   (error "Cannot use define-primitive while targeting a non-modifiable host")
                    (let* ((prim-num (cons 'tbd 
                                           (cons (cons 'quote (cons 0 '())) 
                                                 (cons (cons 'quote (cons 1 '())) '())))) ;; creating cell that will be set later on
@@ -1700,6 +1701,8 @@
 (define (root-dir)
   (rsc-path-directory (or (script-file) (executable-path))))
 
+(define %read-all read-all)
+
 (define (read-all)
   (let ((x (read)))
     (if (eof-object? x)
@@ -1707,7 +1710,13 @@
         (cons x (read-all)))))
 
 (define (read-from-file path)
-  (with-input-from-file path read-all))
+  (let* ((file-str (string-from-file path))
+         (port (open-input-string file-str)))
+
+    (if (and (eqv? (char->integer (string-ref file-str 0)) 35) ; #\#
+             (eqv? (char->integer (string-ref file-str 1)) 33)) ; #\!
+      (read-line port)) ;; skip line
+    (%read-all port)))
 
 (define (read-library lib-path)
   (read-from-file
@@ -1717,7 +1726,7 @@
        lib-path)))
 
 (define (read-program lib-path src-path)
-  (append (read-library lib-path)
+  (append (apply append (map read-library lib-path))
           (if (equal? src-path "-")
               (read-all)
               (read-from-file src-path))))
@@ -1734,23 +1743,6 @@
       (find predicate (cdr lst)))
     #f))
 
-#;(define (populate-prims prims str-file)
-  (extract
-    (lambda (prim acc rec)
-      (case (car prim)
-        ((primitive)
-         (let ((body (rec ""))
-               (head (apply substring (cons str-file (cdr (soft-assoc 'head prim)))))
-               (use (soft-assoc 'use prims)))
-           (append acc (cons (cons (caadr prim) 
-                                   (cons 'tbd (cons (cadr prim) (cons (cons 'body (cons (if (eqv? (string-length body) 0) head body) '())) 
-                                                                      (cons (cons 'head (cons head '())) 
-                                                                            (or use '())))))) '()))))
-        ((str)
-         (cadr ))))
-    prims
-    '()))
-
 (define (soft-assoc sym lst)
   (find (lambda (e) (and (pair? e) (eq? (car e) sym)))
         lst))
@@ -1759,27 +1751,49 @@
   (define primitives-body (cadr (soft-assoc 'body (soft-assoc 'primitives parsed-file))))
   (filter (lambda (x) (eq? (car x) 'primitive)) primitives-body))
 
+(define (pp-return x)
+  (pp x)
+  x)
+
 (define (extract-primitives parsed-file)
-  (extract
-    (lambda (prim acc rec)
-      (case (car prim)
-        ((primitive)
-         (let ((body (rec ""))
-               (head (cadr (soft-assoc 'head prim)))
-               (use (soft-assoc 'use prim)))
-           (append acc (cons (cons (caadr prim) 
-                                   (cons 'tbd (cons (cadr prim) (cons (cons 'body (cons (if (eqv? (string-length body) 0) head body) '())) 
-                                                                      (cons (cons 'head (cons head '())) 
-                                                                            (or use '())))))) '()))))
-        ((str)
-         (cadr prim))))
-    (extract-primitives-body parsed-file)
-    
-    '())
-  #;(extract-predicate (lambda (prim) (eq? (car prim) 'primitive)) parsed-file))
+  (and
+    (soft-assoc 'primitives parsed-file) ;; check if body is present in primitives
+    (reverse
+      (extract
+        (lambda (prim acc rec)
+          (case (car prim)
+            ((primitive)
+             (let ((body (rec ""))
+                   (new-prim (filter (lambda (x) (and (pair? x) (not (eq? (car x) 'body)))) prim))) ;;remove body clause
+               (cons (cons (caadr prim) 
+                           (cons 'tbd
+                                 (append new-prim (cons (cons 'body (cons body '())) '())))) acc)))
+            ((str)
+             (cadr prim))))
+        (extract-primitives-body parsed-file)
+        '()))))
 
 (define (extract-features parsed-file)
   (extract-predicate (lambda (prim) (eq? (car prim) 'feature)) parsed-file))
+
+(define (extract-use-feature parsed-file used-primitives)
+  (extract
+    (lambda (prim acc rec)
+      (case (car prim)
+        ((use-feature)
+         (append (filter symbol? (cdr prim)) acc))
+        ((primitives)
+         (append (rec '()) acc))
+        ((primitive)
+         (let ((is-used (memq (caadr prim) used-primitives))
+               (use (soft-assoc 'use prim)))
+           (if (and is-used use)
+             (append (cdr use) acc)
+             acc)))
+        (else
+          acc)))
+    parsed-file
+    '()))
 
 (define (extract-predicate predicate parsed-file)
   (extract (lambda (prim acc rec)
@@ -1813,24 +1827,45 @@
       (loop (cdr cur) (+ len 1)))))
 
 (define (detect-macro line len)
-  (let loop ((cur line) (cur-next (cdr line)) (len len) (start #f) (macro-len 0))
-    (if (<= len 1)
-      (cons #f #f)
-      (if (and (eqv? (car cur) 64) (eqv? (cadr cur) 64))
-        (if start
-          (cons start (+ 2 macro-len))
-          (loop (cdr cur-next) (cddr cur-next) (- len 1) cur 2))
-        (begin
-          (loop cur-next 
-              (cdr cur-next)
-              (- len 1)
-              start
-              (if start (+ macro-len 1) macro-len)))))))
-
+  (let loop ((cur line) (len len) (start #f) (macro-len 0))
+    (if (<= len 2)
+      (if start
+        (cons 
+          'start
+          (cons start
+                (+ 1 macro-len)))
+        (cons 'none '()))
+      (cond
+        ((and (eqv? (car cur) 64)     ;; #\@
+              (eqv? (cadr cur) 64)    ;; #\@
+              (eqv? (caddr cur) 40))  ;; #\(
+         (if start
+           (error "cannot start 2 @@\\( on the same line")
+           (loop (cdddr cur)
+                 (- len 3)
+                 cur
+                 3)))
+        ((and (eqv? (car cur)  41)    ;; #\)
+              (eqv? (cadr cur) 64)    ;; #\@
+              (eqv? (cadr cur) 64))   ;; #\@
+         (if start
+           (cons
+             'start-end ;; type
+             (cons 
+               start
+               (+ 3 macro-len)))
+           (cons 
+             'end ;; type
+             '())))
+        (else
+          (loop (cdr cur)
+                (- len 1)
+                start
+                (if start (+ macro-len 1) macro-len)))))))
 
 ;; Can be redefined by ribbit to make this function really fast. It would only be (rib lst len string-type)
 (define (list->string* lst len)
-  (let ((str (make-string len #\0)))
+  (let ((str (make-string len (integer->char 48))))
     (let loop ((lst lst) (i 0))
       (if (< i len)
         (begin
@@ -1851,124 +1886,56 @@
              (cur-end (car next-line-pair))
              (cur-len (cdr next-line-pair))
              (macro-pair (detect-macro cur-line cur-len))
-             (macro (car macro-pair))
-             (macro-len (cdr macro-pair))
-             #;(_ (if macro (pp (list->string* macro macro-len)))))
-        (cond 
-          ((and (eqv? macro-len 5)
-                (eqv? (caddr macro) 41))
+             (macro-type (car macro-pair))
+             (macro-args (cdr macro-pair))
+             (parsed-file 
+               (cond
+                 ((eqv? macro-type 'end) ;; include last line
+                  (cons (cons 'str (cons (list->string* start-line (+ cur-len start-len)) '())) parsed-file))
+                 ((eqv? start-len 0)
+                  parsed-file)
+                 ((or (eqv? macro-type 'start) 
+                      (eqv? macro-type 'start-end))
+                  (cons (cons 'str (cons (list->string* start-line start-len) '())) parsed-file))
+                 (else
+                   parsed-file))))
 
+        (cond 
+          ((eqv? macro-type 'end)
            (cons cur-end
-                 (reverse (cons (cons 'str (cons (list->string* start-line (+ cur-len start-len)) '())) parsed-file))))
-          (macro 
-            (let* ((parsed-file (if (eqv? start-len 0) parsed-file (cons (cons 'str (cons (list->string* start-line start-len) '())) parsed-file)))
-                   (macro-string (list->string* (cddr macro) (- macro-len 4)))
-                   (p (open-input-string (string-append macro-string (make-string 1 (integer->char 41)))))
-                   (macro-sexp (read p))
-                   (last-char (read-char p))
-                   (macro-ended (not (eof-object? last-char))))
-              (if macro-ended
-                (loop
-                  cur-end
-                  (cons (append macro-sexp (cons (cons 'head (cons (list->string* cur-line cur-len) '())) '())) parsed-file)
-                  0
-                  cur-end)
-                (let* ((body-pair (parse-host-file cur-end))
-                       (body-cur-end (car body-pair))
-                       (body-parsed (cdr body-pair)))
-                  (loop body-cur-end
-                        (cons (append macro-sexp (cons (cons 'head (cons (list->string* cur-line cur-len) '())) (cons (cons 'body (cons body-parsed '())) '()))) parsed-file)
-                        0
-                        body-cur-end)))))
-          (else
-            (loop cur-end parsed-file (+ cur-len start-len) start-line))))
+                 (reverse parsed-file)))
+          ((eqv? macro-type 'none)
+           (loop cur-end parsed-file (+ cur-len start-len) start-line))
+          ((eqv? macro-type 'start)
+           (let* ((macro (car macro-args))
+                  (macro-len (cdr macro-args))
+                  (macro-string (list->string* (cddr macro) (- macro-len 2)))
+                  (macro-sexp (read (open-input-string (string-append macro-string ")"))))
+                  (body-pair (parse-host-file cur-end))
+                  (body-cur-end (car body-pair))
+                  (body-parsed  (cdr body-pair))
+                  (head (cons 'head (cons (list->string* cur-line cur-len) '())))
+                  (body (cons 'body (cons body-parsed '()))))
+             (loop body-cur-end
+                   (cons (append macro-sexp (cons head (cons body '()))) parsed-file)
+                   0
+                   body-cur-end)))
+          ((eqv? macro-type 'start-end)
+           (let* ((macro (car macro-args))
+                  (macro-len (cdr macro-args))
+                  (macro-string (list->string* (cddr macro) (- macro-len 4)))
+                  (macro-sexp (read (open-input-string macro-string)))
+                  (head-parsed (list->string* cur-line cur-len))
+                  (body (cons 'body (cons (cons (cons 'str (cons head-parsed '())) '()) '())))
+                  (head (cons 'head (cons head-parsed '()))))
+             (loop
+               cur-end
+               (cons (append macro-sexp (cons head (cons body '()))) parsed-file)
+               0
+               cur-end)))
+          (else (error "Unknown macro-type"))))
       (reverse (cons (cons 'str (cons (list->string* start-line start-len) '())) parsed-file)))))
 
-#;(define (parse-host-file file-str)
-  (define MACRO_CHAR 64) ;#\@
-
-  (let ((str-len (string-length file-str)))
-    (let loop ((i 0) 
-               (start 0)
-               (last-new-line 0)
-               (current-macro #f)
-               (parsed-file '()))
-
-      (if (< i (- str-len 2))
-        (let* ((current-char      (char->integer (string-ref file-str i)))
-               (next-char         (char->integer (string-ref file-str (+ i 1))))
-               (next-next-char    (char->integer (string-ref file-str (+ i 2))))
-               (last-new-line     (if (= current-char 10) i last-new-line)))
-          (cond 
-            ((and 
-               (not current-macro)
-               (= current-char MACRO_CHAR)
-               (= next-char    MACRO_CHAR)
-               (= next-next-char 40))
-             (loop (+ 2 i)
-                   start
-                   last-new-line
-                   (cons (cons 'head (cons last-new-line (cons i '()))) '()) ;; '((head ,last-new-line ,i))
-                   (append parsed-file (cons (cons '%str (cons start (cons i '()))) '()))))
-
-            ((and 
-               (not current-macro)
-               (= current-char MACRO_CHAR)
-               (= next-char    MACRO_CHAR)
-               (= next-next-char 41))
-             (cons (cons (+ 3 i) last-new-line) 
-                   (append parsed-file 
-                           (cons (cons '%str 
-                                       (cons 
-                                         start
-                                         (cons i '()))) 
-                                 '()))))
-             ((and
-                current-macro
-                (= current-char MACRO_CHAR)
-                (= next-char MACRO_CHAR))
-              (let* ((num-parents 1)
-                     (macro-start (+ 2 (caddr (assq 'head current-macro))))
-                     (macro-string (substring file-str macro-start i))
-                     (p (open-input-string 
-                          (string-append macro-string (make-string num-parents (integer->char 41)))))
-                     (macro-sexp (read p))
-                     (last-char (read-char p))
-                     (macro-ended (not (eof-object? last-char))))
-                (if macro-ended
-                  (loop (+ i 2)
-                        (+ i 2)
-                        last-new-line
-                        #f
-                        (append
-                          parsed-file
-                          (cons
-                            (append macro-sexp current-macro)
-                            '())))
-                  (let* ((body-pair
-                           (loop (+ i 2)
-                                 (+ i 2)
-                                 last-new-line
-                                 #f
-                                 '()))
-                         (body-i (caar body-pair))
-                         (body-last-new-line (cdar body-pair))
-                         (body (cdr body-pair)))
-                    (loop body-i
-                          body-i
-                          body-last-new-line
-                          #f
-                          (append 
-                            parsed-file
-                            (cons (append macro-sexp (append current-macro (cons (cons 'body (cons body '())) '()))) '())))))))
-
-             (else
-               (loop (+ i 1)
-                     start
-                     last-new-line
-                     current-macro
-                     parsed-file))))
-          (append parsed-file (cons (cons '%str (cons start (cons (+ 2 i) '()))) '()))))))
 
 (define (unique-aux lst1 lst2)
   (if (pair? lst1)
@@ -1980,33 +1947,25 @@
 (define (unique lst)
   (unique-aux lst '()))
 
-(define (needed-features features activated-prims)
-  (let loop ((to-process (unique
-                           (fold (lambda (prim acc) 
-                                   (let ((uses (soft-assoc 'uses prim)))
-                                     (if uses
-                                       (append (cdr uses) acc)
-                                       acc)))
-                                 '()
-                                 activated-prims)))
+(define (needed-features features activated-features)
+  (let loop ((to-process activated-features)
              (needed-features '()))
     (if (pair? to-process)
 
       (let* ((current (car to-process))
              (current-feature (find (lambda (feature) (eq? (car feature) current))
                                     features))
-             (current-used (soft-assoc 'used current-feature))
+             (current-used (soft-assoc 'use current-feature))
              (current-used (if current-used (cdr current-used) '())))
         (loop 
           (fold (lambda (x acc) 
-                  (if (not (and (memq x to-process)
-                                (memq x (needed-features))))
-                    (cons x acc)
-                    acc))
+                  (if (memq x (append needed-features to-process))
+                    acc
+                    (cons x acc)))
                 (cdr to-process)
                 current-used)
           (cons current needed-features)))
-      needed-features)))
+      (unique needed-features))))
 
 (define (generate-file nfeatures included-prims parsed-file str-file)
   (extract
@@ -2039,10 +1998,11 @@
                acc 
                (apply string-append
                       (map generate-one included-prims)))))
+          ((use-feature)
+           (string-append acc (rec "")))
           ((primitive)
            acc) 
           (else
-            
             acc)))
     parsed-file
     ""))
@@ -2075,9 +2035,11 @@
     (if primitives
       (let* ((parsed-file (parse-host-file (string->list* host-str)))
              (features (extract-features parsed-file))
+             (used-primitives (map car primitives))
+             (activated-features used-primitives)
              (used-features (needed-features 
-                              features 
-                              primitives)))
+                              (append primitives (map cdr features)) 
+                              activated-features)))
         (generate-file 
           used-features
           primitives
@@ -2188,8 +2150,10 @@
     #f     ;; rvm-path
     #f     ;; minify?
     #f     ;; primitives
+    #f     ;; vm-source
     (compile-program
      0 ;; verbosity
+     #f ;; vm-source
      (read-all)))))
 
 (define target "rvm")
@@ -2204,7 +2168,7 @@
    (define (fancy-compiler src-path
                            output-path
                            rvm-path
-                           _target
+                           _target 
                            input-path
                            lib-path
                            minify?
@@ -2252,7 +2216,7 @@
                (target "rvm")
                (input-path #f)
                (output-path #f)
-               (lib-path "default")
+               (lib-path '())
                (src-path #f)
                (minify? #f)
                (primitives #f)
@@ -2272,7 +2236,7 @@
                           (set! output-path (car rest))
                           (loop (cdr rest)))
                          ((and (pair? rest) (member arg '("-l" "--library")))
-                          (set! lib-path (car rest))
+                          (set! lib-path (cons (car rest) lib-path))
                           (loop (cdr rest)))
                          ((and (pair? rest) (member arg '("-m" "--minify")))
                           (set! minify? #t)
@@ -2281,7 +2245,7 @@
                           (set! primitives (read (open-input-string (car rest))))
                           (loop (cdr rest)))
                          ((and (pair? rest) (member arg '("-r" "--rvm")))
-                          (set! rvm (cdr rest))
+                          (set! rvm-path (car rest))
                           (loop (cdr rest)))
                          ((member arg '("-v" "--v"))
                           (set! verbosity (+ verbosity 1))
@@ -2328,7 +2292,7 @@
                          (string-append "/rvm." target))))
                  target
                  input-path
-                 lib-path
+                 (if (eq? lib-path '()) '("default") lib-path)
                  minify?
                  verbosity
                  primitives)))))
