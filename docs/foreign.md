@@ -1,4 +1,4 @@
-# RVM Feature Proposal for Foreign Objects
+# RVM Feature Proposal: Foreign Objects
 
 ## Intro to Foreign Objects
 
