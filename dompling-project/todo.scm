@@ -1,0 +1,27 @@
+(set! app (element-by-id "app"))
+(set! todos (create-element "ol"))
+
+(set-style todos "list-style-type" "none")
+(define new-todo (lambda ()
+                   (let ((box (create-element "input")) (item (create-element "li")) (text (create-element "span")))
+                     (set-attr box "type" "checkbox")
+                     (set-attr text "innerText" (get-attr input "value"))
+                     (append-node box item)
+                     (append-node text item)
+                     (append-node item todos)
+                     (set-attr input "value" "")
+                     )
+                   )
+  )
+
+(set! input (create-element "input"))
+(set-attr input "type" "text")
+
+(set! button (create-element "button"))
+(add-event button "click" new-todo)
+(set-style button "color" "red")
+(set-attr button "innerText" "New Todo!")
+
+(append-node todos app)
+(append-node input app)
+(append-node button app)

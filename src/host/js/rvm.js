@@ -286,6 +286,7 @@ rib_to_symbol = (r) => {
 
 // @@(feature rib_to_any (use rib_to_str rib_to_list rib_to_bool rib_to_bool rib_to_function rib_to_symbol)
 rib_to_any = (r) => {
+  if (r === undefined) return r;
   if (typeof r === "number") return r;
   let tag = r[2]
   return [rib_to_list, rib_to_function, rib_to_symbol, rib_to_str, rib_to_list, rib_to_bool, (x) => x[1]][tag](r);
