@@ -2,6 +2,10 @@ input = ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y"; // RVM code that prin
 
 debug = false; //debug
 
+// @@(feature debug
+debug = true
+// )@@
+
 lengthAttr = "length";
 
 nodejs = ((function () { return this !== this.window; })()); //node
@@ -50,6 +54,7 @@ if (nodejs) { // in nodejs? //node
   selectionStartAttr = "selectionStart";
 
   domdoc[addEventListenerAttr]("DOMContentLoaded", () => {
+    // @@(feature text_area
     dombody = domdoc.body;
     txtarea = dombody.appendChild(domdoc.createElement("textarea"));
     txtarea.style = "width:100%;height:50vh;";
@@ -63,12 +68,17 @@ if (nodejs) { // in nodejs? //node
         run(); // wake up VM
       }
     });
+    // )@@
     run();
   });
 
   putchar = (c) => (selstart=txtarea[selectionStartAttr]=(txtarea.value += String.fromCharCode(c))[lengthAttr], c);
 
   getchar = () => pos<input[lengthAttr] && push(get_byte());
+  show_stack = () => {console.log(stack)};
+  sym2str = (s) => chars2str(s[1][0]); //node //debug
+  chars2str = (s) => (s===NIL) ? "" : (String.fromCharCode(s[0])+chars2str(s[1])); //node //debug
+  show_opnd = (o) => is_rib(o) ? "sym " + sym2str(o) : "int " + o; //node //debug
 } //node
 
 // VM
@@ -164,7 +174,7 @@ find_sym = (name, symtbl) => {
 }
 // )@@
 
-// @@(feature function_to_rib (use foreign call find_sym)
+// @@(feature function_to_rib (use foreign host_call find_sym)
 function_to_rib = (f) => {
   let host_call = find_sym('host-call', symtbl)
   let id = find_sym('id', symtbl)
@@ -189,14 +199,14 @@ function_to_rib = (f) => {
   code = [f.length, 0,     // number of params
           [3, NIL, code]] // push nil
 
-  let env = 0 // no environnement
+  let env = 0 // no environment
   return [code, env, 1] // return the procedure
 }
 // )@@
 
 // @@(feature any_to_rib (use list_to_rib str_to_rib bool_to_rib function_to_rib)
 any_to_rib = (v) => {
-  return ({"number":(x)=>x,"boolean":bool_to_rib,"string":str_to_rib,"object":list_to_rib, 'function':function_to_rib, 'undefined':()=>NIL}[typeof v](v))
+  return ({"number":(x)=>x,"boolean":bool_to_rib,"string":str_to_rib,"object":(x) => !Array.isArray(x) ? foreign(x) : list_to_rib(x), 'function':function_to_rib, 'undefined':()=>NIL}[typeof v](v))
 }
 // )@@
 
@@ -242,12 +252,12 @@ rib_to_list = (r) => {
 // )@@
 
 // @@(feature rib_to_function (use rib_to_any any_to_rib)
-func_stack = []
 rib_to_function = (r) => {
+  let func_stack = []
   let func = (...args) => {
     func_stack.push(pc)
     push(r)
-    for(a in args){
+    for(let a in args){
       push(any_to_rib(a))
     }
     pc = [0,args.length,[5, 0, 0]] // call function and then halt
@@ -276,10 +286,9 @@ rib_to_symbol = (r) => {
 
 // @@(feature rib_to_any (use rib_to_str rib_to_list rib_to_bool rib_to_bool rib_to_function rib_to_symbol)
 rib_to_any = (r) => {
-  if (typeof r === "number")
-    return r 
+  if (typeof r === "number") return r;
   let tag = r[2]
-  return [rib_to_list, rib_to_function, rib_to_symbol, rib_to_str, rib_to_list, rib_to_bool][tag](r);
+  return [rib_to_list, rib_to_function, rib_to_symbol, rib_to_str, rib_to_list, rib_to_bool, (x) => x[1]][tag](r);
 }
  // )@@
 
@@ -291,14 +300,12 @@ foreign = (r) => [0, r, 6] // 6 is to tag a foreign object
 // @@(feature host_call (use rib_to_list)
 // f is a foreign object representing a function
 host_call = () =>{
-  args = pop()
-  f = pop()[1]
-  return push(any_to_rib(f(...rib_to_list(args))))
+  args = pop();
+  f = pop()[1];
+  let r = f(...rib_to_list(args));
+  return push(any_to_rib(r))
 } 
 // )@@
-
-
-
 
 is_rib = (x) => x[lengthAttr];
 
