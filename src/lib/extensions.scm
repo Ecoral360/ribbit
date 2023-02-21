@@ -4,9 +4,9 @@
       (use str_to_rib)
       "() => push('hello world'),"
       )
-    (define-primitive (console.log s)
-      (use rib_to_str)
-      "() => console.log(rib_to_str(pop())),")
+ ;   (define-primitive (console.log s)
+ ;     (use rib_to_str)
+ ;     "() => console.log(rib_to_str(pop())),")
 
 
     (define-primitive (string-from-file path)
