@@ -18,6 +18,10 @@
       (use any_to_rib rib_to_str)
       "prim3((value, name, e) => any_to_rib((e[1][rib_to_str(name)] = rib_to_any(value)))),"
       )
+    ;(define-primitive (set-attrs element attrs)
+    ;  (use any_to_rib rib_to_str list_to_rib rib_to_list)
+    ;  "prim3((values, name, e) => list_to_rib(rib_to_list(values).map(([name, value]) => any_to_rib((e[1][name] = value))))),"
+    ;  )
     (define-primitive (set-style element style-name style-value)
       (use any_to_rib rib_to_str)
       "prim3((value, name, e) => any_to_rib((e[1].style[rib_to_str(name)] = rib_to_any(value)))),"
@@ -51,3 +55,4 @@
 
 
 (set! document (get-document))
+(define set-text (lambda (el txt) (set-attr el "innerText" txt)))
