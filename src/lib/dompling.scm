@@ -51,7 +51,7 @@
       )
     (define-primitive (append-node parent element)
       (use foreign rib_to_str)
-      "prim2((element, parent) => parent[1].append(element[1])),"
+      "prim2((element, parent) => parent[1].append(rib_to_any(element))),"
       )
     (define-primitive (html-element? element)
       (use bool_to_rib)

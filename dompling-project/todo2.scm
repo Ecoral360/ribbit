@@ -5,17 +5,20 @@
       font-family: \"Arial\";
     }"))
 
+(define counter 0)
+
+
 (define main
-  (div '((class "main") (style "
+  (div '(class "main" style "
   display: flex;
   justify-content: center;
   align-items: center;
   flex-direction: column;
-  "))
+  ")
     '((h1 '() "Hello World!")
-       (div '()
-         (p '(style "max-width: 40ch; text-align: justify;") "Excepturi voluptate sint est tempora dolore necessitatibus ut quam. Quia porro aut voluptatibus est. Eligendi excepturi voluptas iure porro commodi odit molestiae vel. Soluta omnis repellendus omnis explicabo molestiae ut maxime. Vel consequatur officia aspernatur animi dolore in dignissimos.")
-         )))
+       (p '() counter)
+       (button '(on:click (lambda (e) (set! counter (+ counter 1)) (console.log counter))) "Click me!"))
+    )
   )
 
 

@@ -19,29 +19,33 @@
               (value (cdr (car attrs)))
               (rest (cdr attrs))
               (attr-name (if (string? attr) attr (symbol->string attr))))
-        (set-attr el attr-name value)
+        (if (string=? (substring attr-name 0 3) "on:")
+          (add-event el (substring attr-name 3 (string-length attr-name)) (eval value))
+          (set-attr el attr-name value)
+          )
         (set-attrs el rest))
       (let* ((attr (car attrs)) ; syntax: attribute "value"
               (value (cadr attrs))
               (rest (cddr attrs))
               (attr-name (if (string? attr) attr (symbol->string attr))))
-        (set-attr el attr-name value)
+        (if (string=? (substring attr-name 0 3) "on:")
+          (add-event el (substring attr-name 3 (string-length attr-name)) (eval value))
+          (set-attr el attr-name value)
+          )
         (set-attrs el rest))
       )))
 
 (define (add-children el children)
   (cond
-    ((string? children)
-      (define x (create-element "span"))
-      (set-text x children)
-      (append-node el x)
+    ((integer? children)
+      (append-node el (number->string children))
       )
     ((pair? children)
       (for-each
         (lambda (child) (add-children el (eval child))) ; (console.log child))
         children)
       )
-    ((html-element? children)
+    ((or (html-element? children) (string? children))
       (append-node el children)
       )
     ))
@@ -54,12 +58,6 @@
     el
     ))
 
-(define (component-old name)
-  (lambda (child)
-    (define el (create-element (symbol->string name)))
-    (set-text el child)
-    el
-    ))
 
 (define div (component 'div))
 (define span (component 'span))
@@ -82,9 +80,7 @@
 (define ol (component 'ol))
 (define ul (component 'ul))
 (define li (component 'li))
+(define style (component 'style))
 
-(define style
-  (lambda (css)
-    (define s (create-element "style"))
-    (set-text s css)
-    s))
+
+
