@@ -49,6 +49,10 @@
       (use rib_to_str)
       "() => push(foreign(document.createElement(rib_to_str(pop())))),"
       )
+    (define-primitive (to-html-node tag)
+      (use rib_to_str)
+      "() => push(foreign(document.createTextNode(rib_to_any(pop())))),"
+      )
     (define-primitive (append-node parent element)
       (use foreign rib_to_str)
       "prim2((element, parent) => parent[1].append(rib_to_any(element))),"

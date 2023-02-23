@@ -6,11 +6,12 @@
       display: flex;
       flex-direction: column;
       justify-content: center;
-      align-content: center;
+      align-items: center;
     }"))
 
 (define counter 0)
-
+(define (get-counter) counter)
+;(console.log main)
 
 (define (add-to-counter)
   (set! counter (+ counter 1))
@@ -18,12 +19,12 @@
   (console.log counter)
   )
 
-
 (define main
-  (<div> '(class "main")
-    '((<h1> '() "Hello World!")
-       (<p> '(id "counter") counter)
-       (<button> '(on:click add-to-counter) "Click me!")
+  (html
+    '(<div> @class "main" @style "color: black;"
+       (<h1> "hello world!")
+       (<p> @id "counter" counter)
+       (<button> @on:click add-to-counter "Click me!")
        )))
 
 
