@@ -26,7 +26,11 @@
       )
     (define-primitive (set-attr element attr-name attr-value)
       (use any_to_rib rib_to_str)
-      "prim3((value, name, e) => any_to_rib((e[1][rib_to_str(name)] = rib_to_any(value)))),"
+      "prim3((value, name, e) => any_to_rib((e[1].setAttribute(rib_to_str(name), rib_to_any(value))))),"
+      )
+    (define-primitive (set-text element text)
+      (use any_to_rib rib_to_str)
+      "prim2((value, e) => any_to_rib((e[1].innerText = rib_to_any(value)))),"
       )
     ;(define-primitive (set-attrs element attrs)
     ;  (use any_to_rib rib_to_str list_to_rib rib_to_list)

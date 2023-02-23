@@ -1,14 +1,22 @@
 (define app (element-by-id "app"))
-(define d (span '((style "color: blue")) "TEST!"))
-(define nav
-  (div '()
-    '((span '() "hey!")
-       (span '() "you")
-       "AAAA")
-    )
+(append-node (query-selector "head")
+  (style
+    ".main {
+      font-family: \"Arial\";
+    }"))
+
+(define main
+  (div '((class "main") (style "
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+  "))
+    '((h1 '() "Hello World!")
+       (div '()
+         (p '(style "max-width: 40ch; text-align: justify;") "Excepturi voluptate sint est tempora dolore necessitatibus ut quam. Quia porro aut voluptatibus est. Eligendi excepturi voluptas iure porro commodi odit molestiae vel. Soluta omnis repellendus omnis explicabo molestiae ut maxime. Vel consequatur officia aspernatur animi dolore in dignissimos.")
+         )))
   )
 
-(console.log d)
-(console.log nav)
-(append-node app d)
-(append-node app nav)
+
+(append-node app main)
