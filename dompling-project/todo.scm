@@ -14,7 +14,7 @@ button {
 }
 ")
 
-(append-node style (query-selector "head"))
+(append-node (query-selector "head") style)
 
 
 (define app (element-by-id "app"))
@@ -24,22 +24,22 @@ button {
                    (let ((box (create-element "input")) (item (create-element "li")) (text (create-element "span")))
                      (set-attr box "type" "checkbox")
                      (set-text text (get-attr input "value"))
-                     (append-node box item)
-                     (append-node text item)
-                     (append-node item todos)
+                     (append-node item box)
+                     (append-node item text)
+                     (append-node todos item)
                      (set-attr input "value" "")
                      )
                    )
   )
 
-(set! input (create-element "input"))
+(define input (create-element "input"))
 (set-attr input "type" "text")
 
-(set! button (create-element "button"))
+(define button (create-element "button"))
 (add-event button "click" new-todo)
 (set-text button "New Todo!")
 
-(append-node todos app)
-(append-node input app)
-(append-node button app)
+(append-node app todos)
+(append-node app input)
+(append-node app button)
 

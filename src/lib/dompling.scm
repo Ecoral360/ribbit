@@ -1,5 +1,15 @@
 ;; A simple DOM manipulation library for ribbit programs targetting js
 
+;; Todos:
+;;    - create a tree like:
+;;        (div '()
+;;            (ol '() (
+;;              (li '() "Hello!")
+;;              (li '() (a '(href "https://www.google.com"))
+;;            )
+;;        )
+;;    -
+
 (cond-expand
   ((host js)
     (define-primitive (query-selector query)
@@ -35,14 +45,18 @@
       (use rib_to_str)
       "() => push(foreign(document.createElement(rib_to_str(pop())))),"
       )
-    (define-primitive (append-node element parent)
+    (define-primitive (append-node parent element)
       (use foreign rib_to_str)
-      "prim2((parent, element) => parent[1].append(element[1])),"
+      "prim2((element, parent) => parent[1].append(element[1])),"
+      )
+    (define-primitive (html-element? element)
+      (use bool_to_rib)
+      "prim1((e) => bool_to_rib(Array.isArray(e) && e[1] instanceof HTMLElement)),"
       )
 
     (define-primitive (console.log msg)
       (use rib_to_str)
-      "() => push(console.log(rib_to_str(pop()))),"
+      "() => push(console.log(rib_to_any(pop()))),"
       )
     (define-primitive (get-document)
       "() => push(foreign(document)),"
@@ -53,6 +67,3 @@
     )
   )
 
-
-(set! document (get-document))
-(define set-text (lambda (el txt) (set-attr el "innerText" txt)))
