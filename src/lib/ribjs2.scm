@@ -90,25 +90,25 @@
 
 
 (define (split-attrs&children attrs)
-  (define collected-attrs '())
-  (let loop ((next attrs))
-    (if (and (pair? next) (and (symbol? (car next)) (string=? (substring (symbol->string (car next)) 0 1) "@")))
-      (let* ((attr (car next)) ; syntax: @attribute "value"
-              (value (cadr next))
-              (rest (cddr next))
-              (attr-name (symbol->string attr)))
-        (set! collected-attrs
-          (append collected-attrs
-            (cons
-              (substring attr-name 1 (string-length attr-name))
-              (cons value '()))
-            ))
-        ; (console.log collected-attrs)
-        (loop rest)
-        )
-      (cons collected-attrs next))
-    )
-  )
+  (let ((collected-attrs '()))
+    (let loop ((next attrs))
+      (if (and (pair? next) (and (symbol? (car next)) (string=? (substring (symbol->string (car next)) 0 1) "@")))
+        (let* ((attr (car next)) ; syntax: @attribute "value"
+                (value (cadr next))
+                (rest (cddr next))
+                (attr-name (symbol->string attr)))
+          (set! collected-attrs
+            (append collected-attrs
+              (cons
+                (substring attr-name 1 (string-length attr-name))
+                (cons value '()))
+              ))
+          ; (console.log collected-attrs)
+          (loop rest)
+          )
+        (cons collected-attrs next))
+      )
+    ))
 
 (define (html-tag? symbol)
   (and (symbol? symbol)
@@ -164,42 +164,74 @@
 (define (html root)
   (parse-node root))
 
+(define (replace-node code node)
+  (list-set! code 0
+    (map
+      (lambda (s)
+        (cond
+          ((equal? s '$node) (cons (list-2 'n (list-2 'quote node)) '()))
+          ((equal? s '$body) (list-ref code 1))
+          (else s)))
+      '(let $node $body)))
+
+  (list-ref code 0)
+  #|(let ((acc '()))
+    (for-each
+      (lambda (s)
+        ; (console.log s)
+        (set! acc
+          (cons
+            (cond
+              ((equal? s 'node) (console.log s) node)
+              ((and (pair? s) (html-tag? s)) (parse-node-dyn s))
+              (else s))
+            acc)))
+      code)
+    ; (console.log acc)
+    acc
+    )|#
+  )
 
 
-(define (parse-node-dyn node)
-  (if (or (integer? node) (string? node))
-    (to-html-node node)
-    (let*
-      ((node-tag (symbol->string (car node)))
-        (attrs&children (split-attrs&children (cdr node)))
-        (attrs (car attrs&children))
-        (children (cdr attrs&children))
-        (parsed-node (create-element (substring node-tag 1 (- (string-length node-tag) 1)))) ; removes the '<' and '>' from the tag
-        )
-      ; (console.log attrs)
-      (set-attrs parsed-node attrs)
-      ; (console.log children)
-      (for-each
-        (lambda (child)
-          (cond
-            ((or (integer? child) (string? child))
-              (append-node parsed-node (to-html-node child))
-              )
 
-            ((symbol? child)
-              (append-node parsed-node (parse-node (eval child))))
+(define (parse-node-dyn node env)
+  (replace-node
+    '($
+       (if (or (integer? n) (string? n))
+         (to-html-node n)
+         (let ((node-tag (symbol->string (car n))))
+           (let ((attrs&children (split-attrs&children (cdr n))))
+             (console.log node-tag)
+             (let
+               ((attrs (car attrs&children)))
+               (let ((children (cdr attrs&children)))
+                 (let ((parsed-node (create-element (substring node-tag 1 (- (string-length node-tag) 1))))) ; removes the '<' and '>' from the tag
+                   ; (console.log attrs&children)
+                   (console.log parsed-node)
+                   (set-attrs parsed-node attrs)
+                   (console.log children)
+                   (for-each
+                     (lambda (child)
+                       (cond
+                         ((or (integer? child) (string? child))
+                           (append-node parsed-node (to-html-node child))
+                           )
 
-            ((and (pair? child) (inline-expr? child))
-              (append-node parsed-node (parse-node (eval (cadr child))))
-              )
+                         ((symbol? child)
+                           (append-node parsed-node (parse-node child)))
 
-            ((pair? child)
-              (append-node parsed-node (parse-node child))
-              ))
-          )
-        children)
-      parsed-node)
-    ))
+                         ((and (pair? child) (inline-expr? child))
+                           (append-node parsed-node (parse-node (eval-env (cadr child) env)))
+                           )
 
-(define (html-dyn root)
-  (parse-node-dyn root))
+                         ((pair? child)
+                           (append-node parsed-node (parse-node child))
+                           ))
+                       )
+                     children)
+                   parsed-node)))))
+         ))
+    node))
+
+(define (html-dyn root env)
+  (parse-node-dyn root env))

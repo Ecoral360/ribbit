@@ -1075,8 +1075,14 @@
 (define (compile expr) ;; converts an s-expression to a procedure
   (make-procedure (rib 0 0 (comp '() expr tail)) '()))
 
+(define (compile-w-env expr env)
+  (make-procedure (rib 0 0 (comp '() expr tail)) env))
+
 (define (eval expr)
   ((compile expr)))
+
+(define (eval-e expr env)
+  ((compile-w-env expr env)))
 
 (define (repl)
   (putchar2 62 32) ;; #\> and space

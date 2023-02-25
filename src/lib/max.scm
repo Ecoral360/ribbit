@@ -887,6 +887,7 @@
 (define (build-if a b c) (cons 'if (list3 a b c)))
 (define (list3 a b c) (cons a (list2 b c)))
 (define (list2 a b) (cons a (list1 b)))
+(define (list-2 a b) (cons a (list1 b)))
 (define (list1 a) (cons a '()))
 
 (define (comp-bind cte var expr body cont)
@@ -963,8 +964,14 @@
 (define (compile expr) ;; converts an s-expression to a procedure
   (make-procedure (rib 0 0 (comp '() expr tail)) '()))
 
+(define (compile-env expr env) ;; converts an s-expression to a procedure
+  (make-procedure (rib 0 env (comp '() expr tail)) '()))
+
 (define (eval expr)
   ((compile expr)))
+
+(define (eval-env expr env)
+  ((compile-env expr env)))
 
 (define (repl)
   (putchar2 62 32) ;; #\> and space
