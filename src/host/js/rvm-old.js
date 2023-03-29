@@ -1,4 +1,4 @@
-input = ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y"; // @@(replace ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" source)@@
+input = ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y"; // RVM code that prints HELLO!
 
 debug = false; //debug
 
@@ -351,55 +351,48 @@ run = () => {
         return;
     case 0: // jump/call
         if (debug) { console.log((pc[2]===0 ? "--- jump " : "--- call ") + show_opnd(o)); show_stack(); } //debug
-
-        // if (is_rib(n_passed_args)) push(n_passed_args);
-        if (show_opnd(o) === "sym console.log") {
-          //  pop();
-        }
-
         o = get_opnd(o)[0];
         let c = o[0];
-
         if (is_rib(c)) {
-          let n_passed_args = pop();  // number of args passed by the caller
-          console.log(n_passed_args)
-          let c2 = [0, o, 0];
-          let s2 = c2;
-          let nargs = c[0];
+            let c2 = [0,o,0];
+            let s2 = c2;
+            let nargs = c[0];
 
-          // if (typeof nargs === "number") {  // only positional parameters
-          if (nargs >= 1000) {  // is variadic
-            nargs -= 1000;
-            let variadic_args = n_passed_args - nargs;
-            let var_arg = NIL;
-            while (variadic_args--) {
-              var_arg = [pop(), var_arg, 0];
+            while (nargs--) s2 = [pop(),s2,0];
+            /*
+            if (nargs >= 1000) {  // is variadic
+              nargs -= 1000;
+              let variadic_args = n_passed_args - nargs;
+              let var_arg = NIL;
+              while (variadic_args--) {
+                var_arg = [pop(), var_arg, 0];
+              }
+              s2 = [var_arg, s2, 0];
+             }
+             while (nargs--) s2 = [pop(), s2, 0];
+             */
+
+            if (pc[2]===0) {
+                // jump
+                let k = get_cont();
+                c2[0] = k[0];
+                c2[2] = k[2];
+            } else {
+                // call
+                c2[0] = stack;
+                c2[2] = pc[2];
             }
-            s2 = [var_arg, s2, 0];
-          }
-          while (nargs--) s2 = [pop(), s2, 0];
-
-          if (pc[2] === 0) {
-            // jump
-            let k = get_cont();
-            c2[0] = k[0];
-            c2[2] = k[2];
-          } else {
-            // call
-            c2[0] = stack;
-            c2[2] = pc[2];
-          }
-          stack = s2;
+            stack = s2;
         } else {
-          if (!primitives[c]()) return;
-          if (pc[2] === 0) {
-            // jump
-            c = get_cont();
-            stack[1] = c[0];
-          } else {
-            // call
-            c = pc;
-          }
+            if (!primitives[c]()) return;
+            if (pc[2]===0) {
+                // jump
+                c = get_cont();
+                stack[1] = c[0];
+            } else {
+                // call
+                c = pc;
+            }
         }
         pc = c;
         break;

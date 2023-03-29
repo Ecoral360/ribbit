@@ -64,7 +64,7 @@ char *input =
 
 #else
 
-char *input = ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y"; // RVM code that prints HELLO!
+char *input = "__SOURCE__"; // @@(replace __SOURCE__ source)@@
 
 #endif
 
@@ -438,7 +438,7 @@ void prim(int no) {
     TOS = TAG_RIB(alloc_rib(x, y, CLOSURE_TAG));
     break;
   } //)@@
-  case 5: // @@(primitive (rib? rib) (uses to_bool)
+  case 5: // @@(primitive (rib? rib) (use to_bool)
   {
     PRIM1();
     push2(rvm_to_bool(IS_RIB(x)), PAIR_TAG);
@@ -480,13 +480,13 @@ void prim(int no) {
     push2(TAG(x) = y, PAIR_TAG);
     break;
   } // )@@
-  case 12:  // @@(primitive (eqv? rib1 rib2) (uses to_bool)
+  case 12:  // @@(primitive (eqv? rib1 rib2) (use to_bool)
   {
     PRIM2();
     push2(rvm_to_bool(x == y), PAIR_TAG);
     break;
   } //)@@
-  case 13:  // @@(primitive (< x y) (uses to_bool)
+  case 13:  // @@(primitive (< x y) (use to_bool)
   {
     PRIM2();
     push2(rvm_to_bool(NUM(x) < NUM(y)), PAIR_TAG);

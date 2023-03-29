@@ -25,11 +25,11 @@
       "prim2((attr, e) => any_to_rib(e[1][rib_to_str(attr)])),"
       )
     (define-primitive (set-attr element attr-name attr-value)
-      (use any_to_rib rib_to_str)
+      (use any_to_rib rib_to_any)
       "prim3((value, name, e) => any_to_rib((e[1].setAttribute(rib_to_str(name), rib_to_any(value))))),"
       )
     (define-primitive (set-text element text)
-      (use any_to_rib rib_to_str)
+      (use any_to_rib rib_to_any)
       "prim2((value, e) => any_to_rib((e[1].innerText = rib_to_any(value)))),"
       )
     ;(define-primitive (set-attrs element attrs)
@@ -37,11 +37,11 @@
     ;  "prim3((values, name, e) => list_to_rib(rib_to_list(values).map(([name, value]) => any_to_rib((e[1][name] = value))))),"
     ;  )
     (define-primitive (set-style element style-name style-value)
-      (use any_to_rib rib_to_str)
+      (use any_to_rib rib_to_any)
       "prim3((value, name, e) => any_to_rib((e[1].style[rib_to_str(name)] = rib_to_any(value)))),"
       )
     (define-primitive (add-event element attr-name attr-value)
-      (use any_to_rib rib_to_str)
+      (use any_to_rib rib_to_any)
       "prim3((value, name, e) => (e[1].addEventListener(rib_to_str(name), eval(rib_to_any(value))))),"
       )
 
@@ -50,11 +50,11 @@
       "() => push(foreign(document.createElement(rib_to_str(pop())))),"
       )
     (define-primitive (to-html-node tag)
-      (use rib_to_str)
+      (use rib_to_any)
       "() => push(foreign(document.createTextNode(rib_to_any(pop())))),"
       )
     (define-primitive (append-node parent element)
-      (use foreign rib_to_str)
+      (use foreign rib_to_any)
       "prim2((element, parent) => parent[1].append(rib_to_any(element))),"
       )
     (define-primitive (html-element? element)
@@ -63,8 +63,8 @@
       )
 
     (define-primitive (console.log msg)
-      (use rib_to_str)
-      "() => push(console.log(rib_to_any(pop()))),"
+      (use rib_to_any)
+      "prim1(e => {debugger; console.log(`abc, ${rib_to_any(e)}`); return TRUE}),"
       )
     (define-primitive (get-document)
       "() => push(foreign(document)),"
@@ -75,3 +75,10 @@
     )
   )
 
+
+
+; (define a (lambda (foo bar baz)
+;             (console.log "hey!")
+;             (console.log foo)
+;             (console.log bar)))
+;

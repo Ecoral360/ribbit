@@ -34,14 +34,14 @@
 ; (define main (eval x))
 (define main
   (let ((x counter))
-    (eval (html-dyn
+    (html-dyn
       '(<div> @class "main" @style "color: black;"
          (<h1> "hello world!")
          (<p> @id "counter" [x])
          (<button> @on:click add-to-counter "Click me!")
-         ) '(x)))))
+         ))))
 
-(let ((x 12))
-  (console.log (eval-env 'x )))
+#|(let ((x 12))
+  (console.log (eval-env 'x )))|#
 
 (append-node app main)
