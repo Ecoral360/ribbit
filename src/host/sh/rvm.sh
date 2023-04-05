@@ -1,8 +1,13 @@
-!/bin/sh
+#!/bin/sh
 
+# @@(replace "41 59 39 117 63 62 118 68 63 62 118 82 68 63 62 118 82 65 63 62 118 82 65 63 62 118 82 58 63 62 118 82 61 33 40 58 108 107 109 33 39 58 108 107 118 54 121" (rvm-code-to-bytes (encode 92) " ")
 set 41 59 39 117 63 62 118 68 63 62 118 82 68 63 62 118 82 65 63 62 118 82 65 63 62 118 82 58 63 62 118 82 61 33 40 58 108 107 109 33 39 58 108 107 118 54 121
+# )@@
 
-_DEBUG=false                                                    # DEBUG
+_DEBUG=true
+# @@(feature (not debug)
+_DEBUG=false
+# )@@
                                                                 # DEBUG
 _show()                                                         # DEBUG
 {                                                               # DEBUG
@@ -336,13 +341,18 @@ while true; do
     0)
       if $_DEBUG; then if [ $_P = 0 ]; then printf "jump "; else printf "call "; fi; _showln $_C; fi # DEBUG
       _VAR
+      # @@(feature arity-check 
+      eval _K=\$_X$_S  # NARGS
+      eval _S=\$_Y$_S
+      # )@@
+
       eval _C=\$_X$_C
       eval _B=\$_X$_C
       if [ $_B = ${_B#R} ]; then
 
 case $_B in
   # @@(primitives (gen "\n" index ")\n" body)
-  0) # @@(primitive (rib a b c)@@
+  0) # @@(primitive (rib a b c)
     eval _C=\$_X$_S _S=\$_Y$_S; eval _B=\$_X$_S _S=\$_Y$_S
     if $_DEBUG; then eval printf "\"(rib %s %s %s)\"" \$_X$_S $_B $_C; fi # DEBUG
     _H=$((_H+1)); eval _XR$_H=\$_X$_S _YR$_H=$_B _ZR$_H=$_C _S=\$_Y$_S; _C=R$_H
@@ -416,31 +426,31 @@ case $_B in
     if [ $_B = $_C ]; then _C=$_T; else _C=$_F; fi
     _PUSH
     ;; # )@@
- 13) # @@(primitive (lt a b)
+ 13) # @@(primitive (< a b)
     eval _C=\$_X$_S _S=\$_Y$_S; eval _B=\$_X$_S _S=\$_Y$_S
     if $_DEBUG; then printf "(< %s %s)" $_B $_C; fi # DEBUG
     if [ $_B -lt $_C ]; then _C=$_T; else _C=$_F; fi
     _PUSH
     ;; # )@@
- 14) # @@(primitive (add x y)
+ 14) # @@(primitive (+ x y)
     eval _C=\$_X$_S _S=\$_Y$_S; eval _B=\$_X$_S _S=\$_Y$_S
     if $_DEBUG; then printf "(+ %s %s)" $_B $_C; fi # DEBUG
     _C=$((_B+_C))
     _PUSH
     ;; # )@@
- 15) # @@(primitive (sub x y)
+ 15) # @@(primitive (- x y)
     eval _C=\$_X$_S _S=\$_Y$_S; eval _B=\$_X$_S _S=\$_Y$_S
     if $_DEBUG; then printf "(- %s %s)" $_B $_C; fi # DEBUG
     _C=$((_B-_C))
     _PUSH
     ;; # )@@
- 16) # @@(primitive (mul x y)
+ 16) # @@(primitive (* x y)
     eval _C=\$_X$_S _S=\$_Y$_S; eval _B=\$_X$_S _S=\$_Y$_S
     if $_DEBUG; then printf "(* %s %s)" $_B $_C; fi # DEBUG
     _C=$((_B*_C))
     _PUSH
     ;; # )@@
- 17) # @@(primitive (div x y)
+ 17) # @@(primitive (quotient x y)
     eval _C=\$_X$_S _S=\$_Y$_S; eval _B=\$_X$_S _S=\$_Y$_S
     if $_DEBUG; then printf "(quotient %s %s)" $_B $_C; fi # DEBUG
     _C=$((_B/_C))
@@ -479,9 +489,30 @@ if $_DEBUG; then eval printf "\" -> %s\\n\"" \$_X$_S; fi # DEBUG
       else
         _H=$((_H+1)); eval _XR$_H=0 _YR$_H=$_C _ZR$_H=0; _C=R$_H _A=R$_H _Q=$_B
         eval _I=\$_X$_Q
-        while [ $_I -gt 0 ]; do
+        
+        _G=$((_I/2)) # Number of arguments
+        # @@(feature rest-param (use arity-check)
+        _V=$((_I%2))
+        if  [ "$_V" -eq "0" -a "$_G" -ne "$_K" ] || [ "$_V" -eq "1" -a "$_G" -gt "$_K" ] ; then 
+            echo "*** Unexpected number of arguments nargs: " $_K " nparams: " $_G " Variadic : " $_V
+            exit 1
+        fi
+        _K=$((_K-_G))
+        if [ "$_V" -eq 1 ]; then 
+            _R=$_N
+
+            while [ $_K -gt 0 ]; do
+                _H=$((_H+1)); eval _XR$_H=\$_X$_S _YR$_H=$_R _ZR$_H=0 _S=\$_Y$_S; _R=R$_H
+                _K=$((_K-1))
+            done
+
+            _H=$((_H+1)); eval _XR$_H=$_R _YR$_H=$_A _ZR$_H=0; _A=R$_H
+        fi
+        # )@@
+        
+        while [ $_G -gt 0 ]; do
           _H=$((_H+1)); eval _XR$_H=\$_X$_S _YR$_H=$_A _ZR$_H=0 _S=\$_Y$_S; _A=R$_H
-          _I=$((_I-1))
+          _G=$((_G-1))
         done
         if [ $_P = ${_P#R} ]; then
           _GETCONT

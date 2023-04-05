@@ -39,7 +39,7 @@ prim1((x) => x) //  @@(primitive (id x))@@
 Here, the `{HEAD}` is `prim1((x) => x) // @@(primitive (id x))@@\n`. Because the definition is a one-liner, the value
 of `{BODY}` is set to the value of `{HEAD}`.
 
-## Current features (inside host code)
+## Meta-annotation constructs
 
 ### Features 
 
@@ -72,10 +72,44 @@ annotations to specify the location of individual primitive.
 
 
 ### Primitive
+
 #### `{HEAD} @@(primitive <signature> [(use <feature>+)] [{BODY}])@@`
 This `primitive` annotation specify the location of a sigle primitive. It must be inside a `primitives` annotation (see above)
 - `signature` : A name and arguments as an sexp (for example `(rib a b c)`)
 - `use` : A list of primitive or feature that is used by this primitive.
+
+
+### Replace
+#### `{HEAD} @@(replace <pattern> <expr> [{BODY}])@@`
+The `replace` command, replaces all instances of `pattern` in the `{BODY}` by the value returned by `expr`:
+ - `pattern` must be the text to replace as a symbol or string.
+ - `expr` must be a valid scheme expression that returns a string or one of the special values (or a mix of both). The following fonctions are available : 
+    - `(encode bits)`: Returns the bytecode encoded on `bits` bits. For now, only 92 bits are supported, but we may support more in the future
+    - `(rvm-code-to-bytes input sep)`: Transform a rvm bytecode (or `input`) into a string containing the corresponding bytes separated by the character `sep`.
+
+Ex 1: `__SOURCE__` will be replaced by the compiled source code:
+
+```c
+char *input = "__SOURCE__"; // @@(replace __SOURCE__ (encode 92))@@
+```
+
+Ex 2: The hello world string will be replaced by the source code : 
+
+```c
+// @@(replace ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" (encode 92)
+char *input = ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y";
+// )@@
+```
+
+
+### Location
+
+#### `@@(location <name>)@@`
+
+This `location` annotation defined a location in the code where the features can live
+
+
+## Macro-available contructs
 
 #### `(define-primitive <signature> [(use <feature>+)] <code>)`
 This `define-primitive` macro lets the programmer extend the host by extending the primitives. 
@@ -83,57 +117,20 @@ This `define-primitive` macro lets the programmer extend the host by extending t
 - `use` : A list of primitive or feature that is used by this primitive.
 - `code` : Code of the primitive
 
-### Use-feature
-#### `@@(use-feature <features>+)@@`
-This annotation let the user force the activation of certain features. It is the same semantically as using `-f+ feature-one` command line argument.
-- `features` : A list of features to be activated
-
-
-### Replace
-#### `{HEAD} @@(replace <symbol> <expr> [{BODY}])@@`
-The `replace` command, replaces all instances of `symbol` in the `{BODY}` by the value returned by `expr`:
-    - `symbol` must be the text to replace as a symbol or string.
-    - `expr` must be a valid scheme expression that returns a string or one of the special values (or a mix of both):
-        - `source`: the compiled source code
-        - `line`: the current line in the file when the `replace` is evaluated.
-        - ... Maybe others?
-          <br>
-          <br>
-    - Ex: `__SOURCE__` will be replaced by the compiled source code:
-      ```c
-      char *input = "__SOURCE__"; // @@(replace __SOURCE__ source)@@
-      ```
-
-
-
-## Features Proposed
-
 ### Feature
 
-#### `(define-feature <condition> [(use <feature>+)] <position-code-pair>+)`
+#### `(define-feature <condition> [(use <feature>+)] <location-code-pair>+)`
 
 This `define-feature` macro lets the programmer add primitive at compile-time. 
  - `condition` is a condition under which the feature is added (made of used primitives). 
  - `use` lists the numer of features (or primitives) needed by this one
- - `position-code-pair` pair of position with their respective code. For example (targeting `js`) : 
+ - `location-code-pair` pair of location with their respective code. For example (targeting `js`) : 
+
+ ```scheme
+(define-feature rib_eater (use rib_to_any)
+  (decl "collected_ribs = [];
+         function eat_rib(r) { collected_ribs.push(rib_to_any(r)); }")
+  (start "console.log('Rib eater is activated');")
+  (end "console.log('Here are my lovely eaten ribs (miam) : ', collected_ribs)"))
  ```
- (define-feature rib_eater (use rib_to_any)
-    (init "
-console.log('Rib eater is activated');
-collected_ribs = []
-eat_rib = (r) => {
-    collected_ribs.push(rib_to_any(r));
-}
-")
-    (end "console.log('Here are my lovely eaten ribs (miam) : ', collected_ribs)")
-    )
- ```
-
-### Position
-
-#### `@@(position <name>)@@`
-
-This `position` annotation defined a position in the code where the features can live
-
-
 

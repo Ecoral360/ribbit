@@ -1,4 +1,4 @@
-HOSTS = c js py scm hs lua scala ml sh
+HOSTS = c js py scm hs lua ml sh asm
 
 all:
 
@@ -22,6 +22,21 @@ check:
 	else \
 	  cd host/$$HOST; $(MAKE) check; cd ../..; \
 	fi
+
+
+check-fancy:
+	@if [ "$$HOST" = "" ]; then \
+	  for host in $(HOSTS); do \
+	    echo "====================== TESTING HOST $$host"; \
+	    cd host/$$host; RSC_COMPILER="gsi ../../rsc.scm" $(MAKE) check; cd ../..; \
+	  done; \
+	else \
+	  cd host/$$HOST; RSC_COMPILER="gsi ../../rsc.scm" $(MAKE) check; cd ../..; \
+	fi
+
+check-pipeline: check
+check-all: check-pipeline check-fancy check-features check-bootstrap
+	
 
 check-features:
 	@host="$${HOST:-js}"; \

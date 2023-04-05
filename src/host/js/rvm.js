@@ -1,6 +1,16 @@
-input = ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y"; // @@(replace ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" source)@@
+input = ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y"; // @@(replace ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" (encode 92))@@
 
-debug = false; //debug
+
+// @@(location decl)@@
+
+// @@(feature (or debug debug-trace)
+debug = true; 
+// )@@
+// @@(feature (and (not debug) (not debug-trace))
+debug = false;
+// )@@
+
+
 
 // @@(feature debug
 debug = true
@@ -36,12 +46,12 @@ if (nodejs) { // in nodejs? //node
 
   sym2str = (s) => chars2str(s[1][0]); //node //debug
   chars2str = (s) => (s===NIL) ? "" : (String.fromCharCode(s[0])+chars2str(s[1])); //node //debug
-  show_opnd = (o) => is_rib(o) ? "sym " + sym2str(o) : "int " + o; //node //debug
+  show_opnd = (o) => is_rib(o) ? ("sym " + sym2str(o)) : ("int " + o); //node //debug
   show_stack = () => { //node //debug
     let s = stack; //node //debug
     let r = []; //node //debug
     while (!s[2]) { r[r[lengthAttr]]=s[0]; s=s[1]; } //node //debug
-    console.log(require("util").inspect(r, {showHidden: false, depth: 2})); //node //debug
+    console.log(require("util").inspect(r, {showHidden: false, depth: 2}).replace(/\n/g, "").replace(/  /g, " ")); //node //debug
   } //node //debug
 
 } else { // in web browser //node
@@ -153,11 +163,11 @@ push = (x) => ((stack = [x,stack,0]), true);
 // @@(feature debug
 log_return = (s) => {console.log(s); return s;}
 // )@@
-// @@(feature bool_to_rib
-bool_to_rib = (x) => x ? TRUE : FALSE;
+// @@(feature bool2scm
+bool2scm = (x) => x ? TRUE : FALSE;
 // )@@
-// @@(feature str_to_rib
-str_to_rib = (s) => {
+// @@(feature str2scm
+str2scm = (s) => {
     let l = s.length
     let i = l
     let a = NIL
@@ -166,16 +176,16 @@ str_to_rib = (s) => {
 }
 // )@@
 
-// @@(feature find_sym (use rib_to_list)
+// @@(feature find_sym (use scm2list)
 find_sym = (name, symtbl) => {
-  lst = rib_to_list(symtbl)
+  lst = scm2list(symtbl)
   return list_tail(symtbl, lst.indexOf(name))[0]
 
 }
 // )@@
 
-// @@(feature function_to_rib (use foreign host_call find_sym)
-function_to_rib = (f) => {
+// @@(feature function2scm (use foreign call find_sym)
+function2scm = (f) => {
   let host_call = find_sym('host-call', symtbl)
   let id = find_sym('id', symtbl)
   let arg2 = find_sym('arg2', symtbl)
@@ -204,25 +214,25 @@ function_to_rib = (f) => {
 }
 // )@@
 
-// @@(feature any_to_rib (use list_to_rib str_to_rib bool_to_rib function_to_rib)
-any_to_rib = (v) => {
-  return ({"number":(x)=>x,"boolean":bool_to_rib,"string":str_to_rib,"object":(x) => !Array.isArray(x) ? foreign(x) : list_to_rib(x), 'function':function_to_rib, 'undefined':()=>NIL}[typeof v](v))
+// @@(feature host2scm (use list2scm str2scm bool2scm function2scm)
+host2scm = (v) => {
+  return ({"number":(x)=>x,"boolean":bool2scm,"string":str2scm,"object":list2scm, 'function':function2scm, 'undefined':()=>NIL}[typeof v](v))
 }
 // )@@
 
-// @@(feature list_to_rib (use any_to_rib)
-list_to_rib = (l,i=0) => (i<l.length?[any_to_rib(l[i]),list_to_rib(l,i+1),0]:NIL)
+// @@(feature list2scm (use host2scm)
+list2scm = (l,i=0) => (i<l.length?[host2scm(l[i]),list2scm(l,i+1),0]:NIL)
 // )@@
 
-// @@(feature rib_to_str
-rib_to_str = (r) => {
+// @@(feature scm2str
+scm2str = (r) => {
     let f = (c) => (c===NIL?"":String.fromCharCode(c[0])+f(c[1]))
     return f(r[0])
 }
 // )@@
 
-// @@(feature rib_to_bool
-rib_to_bool = (r) => {
+// @@(feature scm2bool
+scm2bool = (r) => {
   if (r === NIL){
     return []
   }
@@ -236,13 +246,13 @@ rib_to_bool = (r) => {
 }
 // )@@
 
-// @@(feature rib_to_list (use rib_to_any)
-rib_to_list = (r) => {
+// @@(feature scm2list (use scm2host)
+scm2list = (r) => {
   let elems = r[2] === 0 ? r : r[0];
   let lst = [];
   let f = (c) => {
     if (c !== NIL){
-      lst.push(rib_to_any(c[0]))
+      lst.push(scm2host(c[0]))
       f(c[1])
     }
   }
@@ -251,20 +261,20 @@ rib_to_list = (r) => {
 }
 // )@@
 
-// @@(feature rib_to_function (use rib_to_any any_to_rib)
-rib_to_function = (r) => {
-  let func_stack = []
+// @@(feature scm2function (use scm2host host2scm)
+func_stack = []
+scm2function = (r) => {
   let func = (...args) => {
     func_stack.push(pc)
     push(r)
-    for(let a in args){
-      push(any_to_rib(a))
+    for(a in args){
+      push(host2scm(a))
     }
     pc = [0,args.length,[5, 0, 0]] // call function and then halt
     run()
     pc = func_stack.pop()
     return_value = pop()
-    return rib_to_any(return_value)
+    return scm2host(return_value)
   }
   return func
 }
@@ -277,19 +287,19 @@ debug_callback = (callback) => {
 }
 // )@@
 
-// @@(feature rib_to_symbol (use rib_to_str)
-rib_to_symbol = (r) => {
-  return rib_to_str(r[1])
+// @@(feature scm2symbol (use scm2str)
+scm2symbol = (r) => {
+  return scm2str(r[1])
 }
 // )@@
 
 
-// @@(feature rib_to_any (use rib_to_str rib_to_list rib_to_bool rib_to_bool rib_to_function rib_to_symbol)
-rib_to_any = (r) => {
-  if (r === undefined) return r;
-  if (typeof r === "number") return r;
+// @@(feature scm2host (use scm2str scm2list scm2bool scm2bool scm2function scm2symbol)
+scm2host = (r) => {
+  if (typeof r === "number")
+    return r 
   let tag = r[2]
-  return [rib_to_list, rib_to_function, rib_to_symbol, rib_to_str, rib_to_list, rib_to_bool, (x) => x[1]][tag](r);
+  return [scm2list, scm2function, scm2symbol, scm2str, scm2list, scm2bool][tag](r);
 }
  // )@@
 
@@ -298,14 +308,13 @@ rib_to_any = (r) => {
 foreign = (r) => [0, r, 6] // 6 is to tag a foreign object
 // )@@
 
-// @@(feature host_call (use rib_to_list)
+// @@(feature host_call (use scm2list)
 // f is a foreign object representing a function
 host_call = () =>{
-  args = pop();
-  f = pop()[1];
-  let r = f(...rib_to_list(args));
-  return push(any_to_rib(r))
-}
+  args = pop()
+  f = pop()[1]
+  return push(host2scm(f(...scm2list(args))))
+} 
 // )@@
 
 is_rib = (x) => x[lengthAttr];
@@ -324,15 +333,15 @@ primitives = [
   () => (pop(), true),                              //  @@(primitive (arg1 x y))@@
   () => { let y = pop(); pop(); return push(y); },  //  @@(primitive (arg2 x y))@@
   () => push([pop()[0],stack,1]),                   //  @@(primitive (close rib))@@
-  prim1((x) => bool_to_rib(is_rib(x))),             //  @@(primitive (rib? rib) (use bool_to_rib))@@
+  prim1((x) => bool2scm(is_rib(x))),             //  @@(primitive (rib? rib) (use bool2scm))@@
   prim1((x) => x[0]),                               //  @@(primitive (field0 rib))@@
   prim1((x) => x[1]),                               //  @@(primitive (field1 rib))@@
   prim1((x) => x[2]),                               //  @@(primitive (field2 rib))@@
   prim2((y, x) => x[0]=y),                          //  @@(primitive (field0-set! rib))@@
   prim2((y, x) => x[1]=y),                          //  @@(primitive (field1-set! rib))@@
   prim2((y, x) => x[2]=y),                          //  @@(primitive (field2-set! rib))@@
-  prim2((y, x) => bool_to_rib(x===y)),              //  @@(primitive (eqv? x y) (use bool_to_rib))@@
-  prim2((y, x) => bool_to_rib(x<y)),                //  @@(primitive (< x y) (use bool_to_rib))@@
+  prim2((y, x) => bool2scm(x===y)),              //  @@(primitive (eqv? x y) (use bool2scm))@@
+  prim2((y, x) => bool2scm(x<y)),                //  @@(primitive (< x y) (use bool2scm))@@
   prim2((y, x) => x+y),                             //  @@(primitive (+ x y))@@
   prim2((y, x) => x-y),                             //  @@(primitive (- x y))@@
   prim2((y, x) => x*y),                             //  @@(primitive (* x y))@@
@@ -358,22 +367,49 @@ run = () => {
         }
 
         o = get_opnd(o)[0];
+        // @@(feature arity-check
+        let nargs=pop();
+        // )@@
         let c = o[0];
 
         if (is_rib(c)) {
-          let n_passed_args = pop();  // number of args passed by the caller
-          console.log(n_passed_args)
-          let c2 = [0, o, 0];
-          let s2 = c2;
-          let nargs = c[0];
+            let c2 = [0,o,0];
+            let s2 = c2;
 
-          // if (typeof nargs === "number") {  // only positional parameters
-          if (nargs >= 1000) {  // is variadic
-            nargs -= 1000;
-            let variadic_args = n_passed_args - nargs;
-            let var_arg = NIL;
-            while (variadic_args--) {
-              var_arg = [pop(), var_arg, 0];
+            // @@(feature (and debug-trace debug)
+            if(debug){
+                console.log("\nDEBUG " + f + " -- nargs:", nargs, " nparams:", c[0] >> 1, "variadics:", c[0] & 1);
+            }
+            // )@@
+            
+            let nparams = c[0] >> 1; 
+            // @@(feature arity-check
+            if (c[0] & 1 ? nparams > nargs : nparams != nargs){
+                console.log("*** Unexpected number of arguments nargs:", nargs, " nparams:", nparams, "variadics:", c[0]&1);
+                halt();
+            }
+            // )@@
+
+            // @@(feature rest-param (use arity-check)
+            nargs-=nparams;
+            if (c[0]&1) {
+                let rest=NIL;
+                while(nargs--) 
+                    rest=[pop(), rest, 0];
+                s2=[rest,s2,0]
+            }
+            // )@@
+            while (nparams--) s2 = [pop(),s2,0];
+
+            if (pc[2]===0) {
+                // jump
+                let k = get_cont();
+                c2[0] = k[0];
+                c2[2] = k[2];
+            } else {
+                // call
+                c2[0] = stack;
+                c2[2] = pc[2];
             }
             s2 = [var_arg, s2, 0];
           }
@@ -412,7 +448,7 @@ run = () => {
         push(get_opnd(o)[0]);
         break;
     case 3: // const
-        if (debug) { console.log("--- const " + o); show_stack(); } //debug
+        if (debug) { console.log("--- const " + (is_rib(o) ? "" : ("int " + o))); show_stack(); } //debug
         push(o);
         break;
     case 4: // if
@@ -424,4 +460,6 @@ run = () => {
   }
 };
 
+// @@(location start)@@
 if (nodejs) run(); //node
+// @@(location end)@@

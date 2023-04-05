@@ -1,4 +1,6 @@
+# @@(replace ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" (encode 92)
 input=");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" # RVM code that prints HELLO!
+# )@@
 
 import sys
 
@@ -196,7 +198,7 @@ while 1:
  d=0
  op=0
  while 1:
-  d=[20,30,0,10,11,4][op]
+  d=[20,30,0,10,11,4][op
   if n<=2+d:break
   n-=d+3;op+=1
  if x>90:
@@ -238,12 +240,31 @@ while 1:
  if i<1: # jump/call
   if tracing: print(("call " if is_rib(pc[2]) else "jump ") + show(o)) # DEBUG
   o=get_opnd(o)[0]
+  # @@(feature arity-check
+  nargs=pop();
+  # )@@
   c=o[0]
   if is_rib(c):
    c2=[0,o,0]
    s2=c2
-   nargs=c[0]
-   while nargs:s2=[pop(),s2,0];nargs-=1
+   nparams=c[0]>>1
+   # @@(feature arity-check 
+   if nparams > nargs if c[0]&1 else nparams != nargs:
+    print("*** Unexpected number of arguments nargs:", nargs, "nparams", nparams, "variadics:", c[0]&1);
+    exit(1)
+   # )@@
+   # @@(feature rest-param (use arity-check)
+   nargs-=nparams
+   if c[0]&1: 
+    rest=NIL
+    while nargs:
+     rest=[pop(), rest, 0]
+     nargs-=1
+     
+    s2=[rest,s2,0]
+   # )@@
+
+   while nparams:s2=[pop(),s2,0];nparams-=1
    if is_rib(pc[2]): # call
     c2[0]=stack
     c2[2]=pc[2]

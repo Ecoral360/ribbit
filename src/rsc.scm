@@ -85,7 +85,7 @@
                     (string-append
                      tmpin
                      (string-append " > " tmpout)))))
-       (let ((out
+       (let ((out                
               (call-with-input-file
                   tmpout
                 (lambda (port) (read-line port #f)))))
@@ -108,7 +108,10 @@
   (ribbit
 
    (define (cmd-line)
-     (cons "" '())))
+     (cons "" '()))
+
+   (define (number? x) (integer? x)))
+
 
   (chicken
 
@@ -452,6 +455,36 @@
 
 ;;;----------------------------------------------------------------------------
 
+(define (display-rib rib depth)
+  (if (> depth 0)
+    (begin
+      (display "[")
+      (cond ((not (rib? rib))
+             (display rib))
+            ((rib? (field0 rib))
+             (display-rib (field0 rib) (- depth 1)))
+            (else
+              (display (field0 rib))))
+      (display " ")
+      (cond ((not (rib? rib))
+             (display rib))
+            ((rib? (field1 rib))
+             (display-rib (field1 rib) (- depth 1)))
+            (else
+              (display (field1 rib))))
+      (display " ")
+      (cond ((not (rib? rib))
+             (display rib))
+            ((rib? (field2 rib))
+             (display-rib (field2 rib) (- depth 1)))
+            (else
+              (display (field2 rib))))
+      (display "]"))
+    (display "...")))
+
+
+;;;------------------------------------------------------------------------------
+
 (define predefined '(rib false true nil)) ;; predefined symbols
 
 (define default-primitives '(
@@ -531,19 +564,38 @@
 
 ;; The compiler from Ribbit Scheme to RVM code.
 
-(define (make-ctx cte live exports) (rib cte (cons live '()) exports))
+(define (make-ctx cte live exports live-features) (rib cte (rib live live-features #f) exports))
 
 (define (ctx-cte ctx) (field0 ctx))
-(define (ctx-live ctx) (car (field1 ctx)))
+(define (ctx-live ctx) (field0 (field1 ctx)))
+(define (ctx-live-features ctx) (field1 (field1 ctx)))
 (define (ctx-exports ctx) (field2 ctx))
 
 (define (ctx-cte-set ctx x)
   (rib x (field1 ctx) (field2 ctx)))
 
 (define (ctx-live-set! ctx x)
-  (set-car! (field1 ctx) x))
+  (field0-set! (field1 ctx) x))
+
+(define (last-item lst)
+  (if (pair? lst)
+    (last-item (cdr lst))
+    lst))
+
+(define (improper-length lst)
+  (if (pair? lst)
+    (+ 1 (improper-length (cdr lst)))
+    0))
+
+(define (improper-list->list lst1 lst2)
+  (if (pair? lst1)
+    (improper-list->list (cdr lst1) (cons (car lst1) lst2))
+    (reverse (cons lst1 lst2))))
+
+    
 
 (define (comp ctx expr cont)
+  ;(pp (list 'comp (ctx-cte ctx) expr cont))
 
   (cond ((symbol? expr)
          (let ((v (lookup expr (ctx-cte ctx) 0)))
@@ -572,13 +624,13 @@
                                       (begin
 ;;                                        (pp `(*** constant propagation of ,var = ,(cadr g))
 ;;                                             (current-error-port))
-                                        (gen-noop cont))
-                                      (comp ctx val (gen-assign v cont)))
+                                        (gen-noop ctx cont))
+                                      (comp ctx val (gen-assign ctx v cont)))
                                   (begin
 ;;                                    (pp `(*** removed dead assignment to ,var)
 ;;                                         (current-error-port))
-                                    (gen-noop cont))))
-                            (comp ctx val (gen-assign v cont)))))))
+                                    (gen-noop ctx cont))))
+                            (comp ctx val (gen-assign ctx v cont)))))))
 
                  ((eqv? first 'if)
                   (let ((cont-false (comp ctx (cadddr expr) cont)))
@@ -587,23 +639,36 @@
                         (comp ctx (cadr expr) cont-test)))))
 
                  ((eqv? first 'lambda)
-                  (let ((params (cadr expr)))
+                  (let* ((params (cadr expr))
+                         (variadic (or (symbol? params) (not (eq? (last-item params) '()))))
+                         (nb-params
+                            (if variadic
+                              (improper-length params)
+                              (length params)))
+                         (params 
+                           (if variadic
+                             (improper-list->list params '())
+                             params)))
                     (rib const-op
                          (make-procedure
-                          (rib (length params)
+                          (rib (+ (* 2 nb-params) (if variadic 1 0))
                                0
                                (comp-begin (ctx-cte-set
-                                            ctx
-                                            (extend params
-                                                    (cons #f
-                                                          (cons #f
-                                                                (ctx-cte ctx)))))
+                                             ctx
+                                             (extend params
+                                                     (cons #f
+                                                           (cons #f
+                                                                 (ctx-cte ctx)))))
                                            (cddr expr)
                                            tail))
                           '())
                          (if (null? (ctx-cte ctx))
                              cont
-                             (gen-call (use-symbol ctx 'close) cont)))))
+                             (add-nb-args
+                               ctx
+                               1
+                               (gen-call (use-symbol ctx 'close) 
+                                         cont))))))
 
                  ((eqv? first 'begin)
                   (comp-begin ctx (cdr expr) cont))
@@ -624,7 +689,14 @@
                                    args
                                    (lambda (ctx)
                                      (let ((v (lookup first (ctx-cte ctx) 0)))
-                                       (gen-call v cont))))
+                                       (add-nb-args ctx 
+                                                    (length args)
+                                                    (gen-call 
+                                                      (if (and (number? v)
+                                                               (memq 'arity-check (ctx-live-features ctx)))
+                                                        (+ v 1)
+                                                        v)
+                                                      cont)))))
                         (comp-bind ctx
                                    '(_)
                                    (cons first '())
@@ -640,15 +712,35 @@
       (rib jump/call-op v 0)      ;; jump
       (rib jump/call-op v cont))) ;; call
 
-(define (gen-assign v cont)
-  (rib set-op v (gen-noop cont)))
+(define (gen-assign ctx v cont)
+  (rib set-op v (gen-noop ctx cont)))
 
-(define (gen-noop cont)
-  (if (and (rib? cont) ;; starts with pop?
-           (eqv? (field0 cont) jump/call-op) ;; call?
-           (eqv? (field1 cont) 'arg1)
-           (rib? (field2 cont)))
-      (field2 cont) ;; remove pop
+
+
+(define (is-call? ctx name cont)
+  (let* ((arity-check (memq 'arity-check (ctx-live-features ctx))) 
+         (call-rib 
+           (if arity-check
+             (and (rib? cont) (field2 cont))
+             (and (rib? cont) cont)))
+         (call-rib-ok?
+           (and call-rib
+                (eqv? (field0 call-rib) jump/call-op) ;; call?
+                (eqv? (field1 call-rib) name)
+                (rib? (field2 call-rib)))))
+    (if arity-check
+      (and call-rib-ok?
+           (rib? cont)
+           (eqv? (field0 cont) const-op)
+           (not (rib? (field1 cont)))) ;; push a number
+      call-rib-ok?)))
+
+
+(define (gen-noop ctx cont)
+  (if (is-call? ctx 'arg1 cont)
+      (if (memq 'arity-check (ctx-live-features ctx))
+        (field2 (field2 cont)) ;; remove const and pop
+        (field2 cont)) ;; remove pop
       (rib const-op 0 cont))) ;; add dummy value for set!
 
 (define (comp-bind ctx vars exprs body cont)
@@ -670,12 +762,22 @@
                   body
                   cont)))
 
+(define (add-nb-args ctx nb-args tail)
+  (if (memq 'arity-check (ctx-live-features ctx))
+    (rib const-op
+         nb-args
+         tail)
+    tail))
+
 (define (gen-unbind ctx cont)
   (if (eqv? cont tail)
       cont
-      (rib jump/call-op ;; call
-           (use-symbol ctx 'arg2)
-           cont)))
+      (add-nb-args
+        ctx
+        2
+        (rib jump/call-op ;; call
+             (use-symbol ctx 'arg2)
+             cont))))
 
 (define (use-symbol ctx sym)
   (ctx-live-set! ctx (add-live sym (ctx-live ctx)))
@@ -685,12 +787,16 @@
   (comp ctx
         (car exprs)
         (if (pair? (cdr exprs))
-            (rib jump/call-op ;; call
-                 (use-symbol ctx 'arg1)
-                 (comp-begin ctx (cdr exprs) cont))
+            (add-nb-args
+              ctx
+              2
+              (rib jump/call-op ;; call
+                   (use-symbol ctx 'arg1)
+                   (comp-begin ctx (cdr exprs) cont)))
             cont)))
 
 (define (comp-call ctx exprs k)
+  ;(pp (list 'comp-call (ctx-cte ctx) exprs))
   (if (pair? exprs)
       (comp ctx
             (car exprs)
@@ -759,6 +865,7 @@
                  (memq (caadr feature) live-features)
                  (not (eq? (caadr feature) 'rib)))
           (let ((id (soft-assoc '@@id feature)))
+
             (set! i (+ i 1))
             (if id
               (set-car! (cadr id) (cons 'quote (cons i '())))) ;; set back id in code
@@ -771,7 +878,50 @@
       '((rib 0))
       features)))
 
+(define (string-start-with?* str prefix)
+  (if (and (pair? str)
+           (pair? prefix))
+    (and (eqv? (car str) (car prefix))
+         (string-start-with?* (cdr str) (cdr prefix)))
+    (not (pair? prefix))))
 
+(define (string-start-with? str prefix)
+  (string-start-with?* (string->list str) (string->list prefix)))
+
+
+(define (add-feature-variables live-symbols live-features expansion)
+  (let* ((prefix "##feature-")
+         (live-features (map (lambda (sym)
+                               (string->symbol (string-append prefix (symbol->string sym))))
+                             live-features))
+         (to-add (fold (lambda (sym acc)
+                         (cond 
+                           ((memq sym live-features)
+                            (cons (cons 'set! (cons sym (cons #t '()))) acc))
+                           ((string-start-with? (symbol->string sym) prefix)
+                            (cons (cons 'set! (cons sym (cons #f '()))) acc))
+                           (else acc)))
+                       '()
+                       live-symbols)))
+
+    (cons 'begin
+          (append to-add
+                  (cdr expansion)))))
+
+(define (detect-features live)
+  (fold (lambda (x acc)
+          (if (and (pair? x) (pair? (cdr x)))
+            (let ((expr (cadr x)))
+              (if (and (pair? expr) ;; check for arity check
+                       (eq? (car expr) 'lambda)
+                       (or (symbol? (cadr expr))
+                           (and (pair? (cadr expr))
+                                (not (eq? (last-item (cadr expr)) '())))))
+                (cons 'rest-param (cons 'arity-check acc))
+                acc))
+            acc))
+        '()
+        live))
 
 (define (compile-program verbosity parsed-vm features-enabled features-disabled program)
   (let* ((exprs-and-exports
@@ -790,34 +940,44 @@
          (features (append defined-features host-features))
          (live
            (liveness-analysis expansion exports))
+         (features-enabled 
+           (unique (append (detect-features live) features-enabled)))
          (live-symbols
            (map car live))
 
+
          (live-features 
-           (and parsed-vm 
-                (used-features 
-                  features
-                  live-symbols
-                  features-enabled
-                  features-disabled)))
+           (if parsed-vm 
+             (used-features 
+               features
+               live-symbols
+               features-enabled
+               features-disabled)
+             features-enabled))
+
+         (expansion
+           (add-feature-variables live-symbols (or live-features '()) expansion))
+
          (primitives
            (if parsed-vm
                (set-primitive-order live-features features)
                default-primitives))
          (exports
-           (or exports
+           (or (and (not (memq 'debug live-features)) exports)
                (map (lambda (v)
                       (let ((var (car v)))
                         (cons var var)))
                     live)))
-         (return (make-vector 5 '())))
+         (return (make-vector 5))
+         (ctx (make-ctx '() live exports (or live-features '()))))
+    (set! tail (add-nb-args ctx 1 tail))
     (vector-set! 
       return
       0 
       (make-procedure
-        (rib 0 ;; 0 parameters
+        (rib 2 ;; 0 parameters 
              0
-             (comp (make-ctx '() live exports)
+             (comp ctx
                    expansion
                    tail))
         '()))
@@ -872,8 +1032,8 @@
                         (cons (expand-expr (cadr expr))
                               (cons (expand-expr (caddr expr))
                                     (cons (if (pair? (cdddr expr))
-                                              (expand-expr (cadddr expr))
-                                              #f)
+                                            (expand-expr (cadddr expr))
+                                            #f)
                                           '())))))
 
                  ((eqv? first 'lambda)
@@ -886,60 +1046,60 @@
                  ((eqv? first 'let)
                   (let ((x (cadr expr)))
                     (if (symbol? x) ;; named let?
-                        (expand-expr
-                         (let ((bindings (caddr expr)))
-                           (cons
+                      (expand-expr
+                        (let ((bindings (caddr expr)))
+                          (cons
                             (cons
-                             'letrec
-                             (cons (cons
+                              'letrec
+                              (cons (cons
+                                      (cons x
+                                            (cons (cons 'lambda
+                                                        (cons (map car bindings)
+                                                              (cdddr expr)))
+                                                  '()))
+                                      '())
                                     (cons x
-                                          (cons (cons 'lambda
-                                                      (cons (map car bindings)
-                                                            (cdddr expr)))
-                                                '()))
-                                    '())
-                                   (cons x
-                                         '())))
+                                          '())))
                             (map cadr bindings))))
-                        (let ((bindings x))
-                          (if (pair? bindings)
-                              (cons 'let
-                                    (cons (map (lambda (binding)
-                                                 (cons (car binding)
-                                                       (cons (expand-expr
-                                                              (cadr binding))
-                                                             '())))
-                                               bindings)
-                                          (cons (expand-body (cddr expr))
-                                                '())))
-                              (expand-body (cddr expr)))))))
+                      (let ((bindings x))
+                        (if (pair? bindings)
+                          (cons 'let
+                                (cons (map (lambda (binding)
+                                             (cons (car binding)
+                                                   (cons (expand-expr
+                                                           (cadr binding))
+                                                         '())))
+                                           bindings)
+                                      (cons (expand-body (cddr expr))
+                                            '())))
+                          (expand-body (cddr expr)))))))
 
                  ((eqv? first 'let*)
                   (let ((bindings (cadr expr)))
                     (expand-expr
-                     (cons 'let
-                           (if (and (pair? bindings) (pair? (cdr bindings)))
-                               (cons (cons (car bindings) '())
-                                     (cons (cons 'let*
-                                                 (cons (cdr bindings)
-                                                       (cddr expr)))
-                                           '()))
-                               (cdr expr))))))
+                      (cons 'let
+                            (if (and (pair? bindings) (pair? (cdr bindings)))
+                              (cons (cons (car bindings) '())
+                                    (cons (cons 'let*
+                                                (cons (cdr bindings)
+                                                      (cddr expr)))
+                                          '()))
+                              (cdr expr))))))
 
                  ((eqv? first 'letrec)
                   (let ((bindings (cadr expr)))
                     (expand-expr
-                     (cons 'let
-                           (cons (map (lambda (binding)
-                                        (cons (car binding) (cons #f '())))
-                                      bindings)
-                                 (append (map (lambda (binding)
-                                                (cons 'set!
-                                                      (cons (car binding)
-                                                            (cons (cadr binding)
-                                                                  '()))))
-                                              bindings)
-                                         (cddr expr)))))))
+                      (cons 'let
+                            (cons (map (lambda (binding)
+                                         (cons (car binding) (cons #f '())))
+                                       bindings)
+                                  (append (map (lambda (binding)
+                                                 (cons 'set!
+                                                       (cons (car binding)
+                                                             (cons (cadr binding)
+                                                                   '()))))
+                                               bindings)
+                                          (cddr expr)))))))
 
                  ((eqv? first 'begin)
                   (expand-begin (cdr expr)))
@@ -947,67 +1107,98 @@
                  ((eqv? first 'define)
                   (let ((pattern (cadr expr)))
                     (if (pair? pattern)
-                        (cons 'set!
-                              (cons (car pattern)
-                                    (cons (expand-expr
-                                           (cons 'lambda
-                                                 (cons (cdr pattern)
-                                                       (cddr expr))))
-                                          '())))
-                        (cons 'set!
-                              (cons pattern
-                                    (cons (expand-expr (caddr expr))
-                                          '()))))))
+                      (cons 'set!
+                            (cons (car pattern)
+                                  (cons (expand-expr
+                                          (cons 'lambda
+                                                (cons (cdr pattern)
+                                                      (cddr expr))))
+                                        '())))
+                      (cons 'set!
+                            (cons pattern
+                                  (cons (expand-expr (caddr expr))
+                                        '()))))))
 
 
-                ((eqv? (car expr) 'define-primitive)
-                 (if (not defined-features)
-                   (error "Cannot use define-primitive while targeting a non-modifiable host")
-                   (let* ((prim-num (cons 'tbd
-                                          (cons (cons 'quote (cons 0 '()))
-                                                (cons (cons 'quote (cons 1 '())) '())))) ;; creating cell that will be set later on
-                          (primitive-body (filter pair? (cdr expr)))
-                          (name (caadr primitive-body))
-                          (code (filter string? (cdr expr)))
-                          (code (if (eqv? (length code) 1) (car code) (error "define-primitive is not well formed"))))
+                 ((eqv? (car expr) 'define-primitive)
+                  (if (not defined-features)
+                    (error "Cannot use define-primitive while targeting a non-modifiable host")
+                    (let* ((prim-num (cons 'tbd
+                                           (cons (cons 'quote (cons 0 '()))
+                                                 (cons (cons 'quote (cons 1 '())) '())))) ;; creating cell that will be set later on
+                           (primitive-body (filter pair? (cdr expr)))
+                           (name (caar primitive-body))
+                           (code (filter string? (cdr expr)))
+                           (code (if (eqv? (length code) 1) (car code) (error "define-primitive is not well formed"))))
 
-                     (set! defined-features
-                       (append defined-features
-                               (cons (cons 'primitive
-                                           (append primitive-body
-                                                   (append (cons (cons 'body (cons (cons (cons 'str (cons code '())) '()) '())) '())
-                                                           (cons (cons 'id (cons prim-num '())) '())))) '())))
-                     (cons 'set!
-                           (cons name
-                                 (cons (cons 'rib prim-num)
-                                       '()))))))
+                      (set! defined-features
+                        (append defined-features
+                                (cons (cons 'primitive
+                                            (append primitive-body
+                                                    (append (cons (cons 'body (cons (cons (cons 'str (cons code '())) '()) '())) '())
+                                                            (cons (cons '@@id (cons prim-num '())) '())))) '())))
+                      (cons 'set!
+                            (cons name
+                                  (cons (cons 'rib prim-num)
+                                        '()))))))
+
+                 ((eqv? (car expr) 'define-feature)
+                  (if (not defined-features)
+                    (error "Cannot use define-feature while targeting a non-modifiable host")
+                    (let* ((feature-name (cadr expr))
+                           (has-use (eq? (caaddr expr) 'use))
+                           (feature-use (if has-use (caddr expr) '()))
+                           (feature-location-code-pairs (if has-use (cdddr expr) (cddr expr))))
+                      (for-each 
+                        (lambda (feature-pair)
+                          (set! defined-features 
+                            (append defined-features
+                                    (cons (cons 'feature
+                                                (cons feature-name
+                                                      (cons (cons '@@location
+                                                                  (cons (car feature-pair) '()))
+                                                      (cons feature-use
+                                                            (cons
+                                                              (cons 'body 
+                                                                    (cons
+                                                                      (cons 
+                                                                        (cons 'str
+                                                                              (cons (cadr feature-pair)
+                                                                                    '()))
+                                                                        '())
+                                                                      '()))
+                                                              '())))))
+                                          '()))))
+                        feature-location-code-pairs)
+                      '#f)))
+
 
 
                  ((eqv? first 'and)
                   (expand-expr
-                   (if (pair? (cdr expr))
-                       (if (pair? (cddr expr))
-                           (cons 'if
-                                 (cons (cadr expr)
-                                       (cons (cons 'and
-                                                   (cddr expr))
-                                             (cons #f
-                                                   '()))))
-                           (cadr expr))
-                       #t)))
+                    (if (pair? (cdr expr))
+                      (if (pair? (cddr expr))
+                        (cons 'if
+                              (cons (cadr expr)
+                                    (cons (cons 'and
+                                                (cddr expr))
+                                          (cons #f
+                                                '()))))
+                        (cadr expr))
+                      #t)))
 
                  ((eqv? first 'or)
                   (expand-expr
-                   (if (pair? (cdr expr))
-                       (if (pair? (cddr expr))
-                           (cons
-                            'let
+                    (if (pair? (cdr expr))
+                      (if (pair? (cddr expr))
+                        (cons
+                          'let
+                          (cons
+                            (cons (cons '_
+                                        (cons (cadr expr)
+                                              '()))
+                                  '())
                             (cons
-                             (cons (cons '_
-                                         (cons (cadr expr)
-                                               '()))
-                                   '())
-                             (cons
                               (cons 'if
                                     (cons '_
                                           (cons '_
@@ -1015,28 +1206,28 @@
                                                             (cddr expr))
                                                       '()))))
                               '())))
-                           (cadr expr))
-                       #f)))
+                        (cadr expr))
+                      #f)))
 
                  ((eqv? first 'cond)
                   (expand-expr
-                   (if (pair? (cdr expr))
-                       (if (eqv? 'else (car (cadr expr)))
-                           (cons 'begin (cdr (cadr expr)))
-                           (cons 'if
-                                 (cons (car (cadr expr))
-                                       (cons (cons 'begin
-                                                   (cdr (cadr expr)))
-                                             (cons (cons 'cond
-                                                         (cddr expr))
-                                                   '())))))
-                       #f)))
+                    (if (pair? (cdr expr))
+                      (if (eqv? 'else (car (cadr expr)))
+                        (cons 'begin (cdr (cadr expr)))
+                        (cons 'if
+                              (cons (car (cadr expr))
+                                    (cons (cons 'begin
+                                                (cdr (cadr expr)))
+                                          (cons (cons 'cond
+                                                      (cddr expr))
+                                                '())))))
+                      #f)))
 
                  (else
-                  (expand-list expr)))))
+                   (expand-list expr)))))
 
         (else
-         (expand-constant expr))))
+          (expand-constant expr))))
 
 (define (expand-constant x)
   (cons 'quote (cons x '())))
@@ -1163,11 +1354,11 @@
 
 (define (live? var lst)
   (if (pair? lst)
-      (let ((x (car lst)))
-        (if (eqv? var (car x))
-            x
-            (live? var (cdr lst))))
-      #f))
+    (let ((x (car lst)))
+      (if (eqv? var (car x))
+        x
+        (live? var (cdr lst))))
+    #f))
 
 (define (constant? g)
   (and (pair? (cdr g))
@@ -1258,6 +1449,7 @@
 
 ;; RVM code encoding.
 
+
 (define eb 92) ;; encoding base (strings have 92 characters that are not escaped and not space)
 ;;(define eb 256)
 (define eb/2 (quotient eb 2))
@@ -1292,11 +1484,18 @@
 (define const-proc-start (+ const-sym-start 2))
 (define if-start         (+ const-proc-start (+ const-proc-short 1)))
 
-(define (encode proc exports primitives)
+(define (encode proc exports primitives live-features)
 
   (define syms (make-table))
 
   (define built-constants '())
+
+  (define (add-nb-args nb-args tail)
+    (if (and live-features (memq 'arity-check live-features))
+      (rib const-op
+           nb-args
+           tail)
+      tail))
 
   (define (build-constant o tail)
     (cond ((or (memv o '(#f #t ()))
@@ -1315,9 +1514,11 @@
                     0
                     (rib const-op
                          (- 0 o)
-                         (rib jump/call-op
-                              (scan-opnd '- 0)
-                              tail)))
+                         (add-nb-args
+                           2
+                           (rib jump/call-op
+                                (scan-opnd '- 0)
+                                tail))))
                (rib const-op
                     o
                     tail)))
@@ -1326,27 +1527,34 @@
                            (build-constant (cdr o)
                                            (rib const-op
                                                 pair-type
-                                                (rib jump/call-op
-                                                     (scan-opnd 'rib 0)
-                                                     tail)))))
+                                                (add-nb-args
+                                                  3
+                                                  (rib jump/call-op
+                                                       (scan-opnd 'rib 0)
+                                                       tail))))))
           ((string? o)
            (let ((chars (map char->integer (string->list o))))
              (build-constant chars
                              (build-constant (length chars)
                                              (rib const-op
                                                   string-type
-                                                  (rib jump/call-op
-                                                       (scan-opnd 'rib 0)
-                                                       tail))))))
+                                                  (add-nb-args
+                                                    3
+                                                    (rib jump/call-op
+                                                         (scan-opnd 'rib 0)
+                                                         tail)))))))
           ((vector? o)
            (let ((elems (vector->list o)))
              (build-constant elems
                              (build-constant (length elems)
                                              (rib const-op
                                                   vector-type
-                                                  (rib jump/call-op
-                                                       (scan-opnd 'rib 0)
-                                                       tail))))))
+                                                  (add-nb-args
+                                                    3
+                                                    (rib jump/call-op
+                                                         (scan-opnd 'rib 0)
+                                                         tail)))))))
+
           (else
            (error "can't build constant" o))))
 
@@ -1366,11 +1574,13 @@
                     0
                     (rib const-op
                          procedure-type
-                         (rib jump/call-op
-                              (scan-opnd 'rib 0)
-                              (rib set-op
-                                   (scan-opnd sym 3)
-                                   tail)))))
+                         (add-nb-args 
+                           3
+                           (rib jump/call-op
+                                (scan-opnd 'rib 0)
+                                (rib set-op
+                                     (scan-opnd sym 3)
+                                     tail))))))
           tail)))
 
     (let loop ((lst (cdr primitives)) ;; skip rib primitive that is predefined
@@ -1524,7 +1734,6 @@
                                nparams
                                stream))))))
 
-  (define (number? x) (integer? x))
 
   (define (enc code stream)
     (if (rib? code)
@@ -1764,12 +1973,8 @@
   (find (lambda (e) (and (pair? e) (eq? (car e) sym)))
         lst))
 
-(define (extract-primitives-body parsed-file)
-  (define primitives-body (cadr (soft-assoc 'body (soft-assoc 'primitives parsed-file))))
-  (filter (lambda (x) (eq? (car x) 'primitive)) primitives-body))
-
-(define (pp-return x)
-  (pp x)
+(define (pp-return foo x)
+  (foo x)
   x)
 
 (define (extract-features parsed-file)
@@ -1788,53 +1993,6 @@
     parsed-file
     '()))
 
-(define (extract-primitives parsed-file)
-  (and
-    (soft-assoc 'primitives parsed-file) ;; check if body is present in primitives
-    (reverse
-      (extract
-        (lambda (prim acc rec)
-          (case (car prim)
-            ((primitive)
-             (let ((body (rec ""))
-                   (new-prim (filter (lambda (x) (and (pair? x) (not (eq? (car x) 'body)))) prim))) ;;remove body clause
-               (cons (cons (caadr prim)
-                           (cons 'tbd
-                                 (append new-prim (cons (cons 'body (cons body '())) '())))) acc)))
-            ((str)
-             (cadr prim))))
-        (extract-primitives-body parsed-file)
-        '()))))
-
-#;(define (extract-features parsed-file)
-  (extract-predicate (lambda (prim) (eq? (car prim) 'feature)) parsed-file))
-
-(define (extract-use-feature parsed-file used-primitives)
-  (extract
-    (lambda (prim acc rec)
-      (case (car prim)
-        ((use-feature)
-         (append (filter symbol? (cdr prim)) acc))
-        ((primitives)
-         (append (rec '()) acc))
-        ((primitive)
-         (let ((is-used (memq (caadr prim) used-primitives))
-               (use (soft-assoc 'use prim)))
-           (if (and is-used use)
-             (append (cdr use) acc)
-             acc)))
-        (else
-          acc)))
-    parsed-file
-    '()))
-
-(define (extract-predicate predicate parsed-file)
-  (extract (lambda (prim acc rec)
-             (if (predicate prim)
-               (append (append (rec '()) acc) (cons prim '()))
-               (append (rec '()) acc)))
-           parsed-file
-           '()))
 
 (define (extract walker parsed-file base)
   (letrec ((func
@@ -1896,7 +2054,7 @@
                 start
                 (if start (+ macro-len 1) macro-len)))))))
 
-;; Can be redefined by ribbit to make this function really fast. It would only be (rib lst len string-type)
+;; Can be redefined by ribbit to make this function somewhat fast. It would only be (rib lst len string-type)
 (define (list->string* lst len)
   (let ((str (make-string len (integer->char 48))))
     (let loop ((lst lst) (i 0))
@@ -2058,7 +2216,28 @@
     #f))
 
 
-(define (generate-file parsed-file live-features primitives features input)
+(define (replace-eval expr encode)
+  (cond ((and 
+           (pair? expr)
+           (eq? 'encode (car expr))
+           (eqv? (length expr) 2))
+         (encode (replace-eval (cadr expr) encode)))
+        ((and
+           (pair? expr)
+           (eq? 'rvm-code-to-bytes (car expr))
+           (eqv? (length expr) 3))
+         (rvm-code-to-bytes
+           (replace-eval (cadr expr) encode)
+           (replace-eval (caddr expr) encode)))
+        ((string? expr)
+         expr)
+        ((number? expr)
+         expr)
+        (else
+          (error "Cannot evaluate expression in replace" expr))))
+
+
+(define (generate-file parsed-file live-features primitives features encode)
   (letrec ((extract-func
               (lambda (prim acc rec)
                 (case (car prim)
@@ -2097,19 +2276,26 @@
                    (string-append acc (rec "")))
                   ((primitive)
                    (string-append acc (rec "")))
+                  ((location)
+                   (let* ((name (cadr prim))
+                          (matched-features
+                            (filter 
+                              (lambda (feature)
+                                (let ((location-name (soft-assoc '@@location feature))
+                                      (condition     (cadr feature)))
+                                  (and location-name 
+                                       (eq? (cadr location-name) name)
+                                       (eval-feature condition live-features))))
+                              features)))
+                     (string-append
+                       acc
+                       (extract extract-func matched-features ""))))
                   ((replace)
                    (let* ((pattern     (cadr prim))
                           (pattern     (if (symbol? pattern)
                                          (symbol->string pattern)
                                          pattern))
-                          (replacement (cons (caddr prim) '()))
-                          (replacement-text 
-                            (apply string-append 
-                                   (map (lambda (x)
-                                          (cond 
-                                            ((string? x) x)
-                                            ((and (symbol? x) (eq? x 'source) input))))
-                                        replacement))))
+                          (replacement-text (replace-eval (caddr prim) encode)))
                      (string-append acc (string-replace (rec "") pattern replacement-text))))
                   (else
                     acc)))))
@@ -2127,47 +2313,7 @@
 
 (define (string-from-file path)
   (let ((file-content (call-with-input-file path (lambda (port) (read-line port #f)))))
-       (if (eof-object? file-content) "" file-content)
-))
-
-(define (transform-host-file host-file input primitives live-features)
-  (generate-file
-    host-file
-    live-features
-    primitives
-    input)
-
-
-  (let* ((sample ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y")
-         (host-str (string-replace
-                     (string-replace
-                       (string-replace
-                         (string-replace
-                           host-file-str
-                           sample
-                           input)
-                         (rvm-code-to-bytes sample " ")
-                         (rvm-code-to-bytes input " "))
-                       (rvm-code-to-bytes sample ",")
-                       (rvm-code-to-bytes input ","))
-                     "RVM code that prints HELLO!"
-                     "RVM code of the program")))
-    (if primitives
-      (let* ((parsed-file (parse-host-file (string->list* host-str)))
-             (features (extract-features parsed-file))
-             (used-primitives (map car primitives))
-             (activated-features (append used-primitives features-enabled))
-             (used-features (needed-features
-                              (append primitives (map cdr features))
-                              activated-features
-                              features-disabled)))
-        (generate-file
-          used-features
-          primitives
-          parsed-file
-          host-str))
-      host-str)))
-
+       (if (eof-object? file-content) "" file-content)))
 
 (define (generate-code target verbosity input-path rvm-path minify? host-file proc-exports-and-features) ;features-enabled features-disabled source-vm
   (let* ((proc
@@ -2180,24 +2326,27 @@
            (vector-ref proc-exports-and-features 3))
          (features
            (vector-ref proc-exports-and-features 4))
-         (encoded-program
-           (encode proc exports primitives))
-         (input
-           (string-append encoded-program
-                          (if input-path
-                            (string-from-file input-path)
-                            ""))))
+         (encode (lambda (bits)
+                   (let ((input (string-append 
+                                  (if (eqv? bits 92)
+                                    (encode proc exports primitives live-features)
+                                    (error "Cannot encode program with this number of bits" bits))
+                                  (if input-path
+                                    (string-from-file input-path)
+                                    "")) ))
+                     (if (>= verbosity 1)
+                       (begin
+                         (display "*** RVM code length: ")
+                         (display (string-length input))
+                         (display " bytes\n")))
+                     input))))
 
-    (if (>= verbosity 1)
-        (begin
-          (display "*** RVM code length: ")
-          (display (string-length input))
-          (display " bytes\n")))
+    
 
     (let* ((target-code-before-minification
             (if (equal? target "rvm")
-                input
-                (generate-file host-file live-features primitives features input)))
+                (encode 92)
+                (generate-file host-file live-features primitives features encode)))
            (target-code
             (if (or (not minify?) (equal? target "rvm"))
                 target-code-before-minification
@@ -2275,14 +2424,10 @@
     #f     ;; rvm-path
     #f     ;; minify?
     #f     ;; host-file
-    ;#f     ;; primitives
-    ;#f     ;; features-enabled
-    ;#f     ;; features-disabled
-    ;#f     ;; vm-source
     (compile-program
      0    ;; verbosity
      #f   ;; parsed-vm
-     #f   ;; features-enabled
+     (cons 'arity-check (cons 'rest-param '()))   ;; features-enabled
      #f   ;; features-disabled
      (read-all)))))
 
@@ -2316,9 +2461,12 @@
      ;; for a specific target and minify the resulting target code.
 
 
-     (let* ((vm-source (string-from-file
-                         (path-expand rvm-path
-                                      (root-dir))))
+     (let* ((vm-source 
+              (if (equal? _target "rvm")
+                #f
+                (string-from-file
+                  (path-expand rvm-path
+                               (root-dir)))))
             (host-file
               (if (equal? _target "rvm")
                 #f

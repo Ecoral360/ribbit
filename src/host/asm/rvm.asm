@@ -568,6 +568,7 @@ decompress_long_symbol:
 	dec  al			; start accumulating at 0 or 1
 	call get_int
 
+
 decompress_short_symbol:
 decompress_symbol:
 	mov  ebx, eax
@@ -648,6 +649,14 @@ string_jump	db "jump --",0x0a,0
 string_call	db "call --",0x0a,0
 %endif
 
+; @@(feature arity-check
+string_arity_error db "Arity check error",0x0a,0
+string_test_rest db "Test rest params",0x0a,0
+%ifndef NEED_PRINT_STRING
+%define NEED_PRINT_STRING
+%endif
+; )@@
+
 run_instr_jump_call:
 
 %ifdef DEBUG_INSTR
@@ -664,6 +673,11 @@ print_jump_call_done:
 %endif
 
 	mov  eax, FIELD0(edx)	; eax = procedure to call
+    ; @@(feature arity-check
+    POP_STACK_TO(edx)
+    shr edx, 1
+    mov  TEMP3, edx
+    ; )@@
 	mov  edx, FIELD0(eax)	; edx = field0 of procedure (int or rib)
 	shr  edx, 1
 %if FIX_TAG == 0
@@ -683,8 +697,50 @@ is_closure:
 	mov  FIELD1(eax), edx
 	mov  edx, FIELD0(edx)
 	mov  edx, FIELD0(edx)	; get nparams
-	shr  edx, 1
+    shr  edx, 2 ;; remove tagging and rest param
+    ; @@(feature arity-check (use exit)
+    jc  with_rest
+no_rest:
+    cmp  edx, TEMP3
+	je   create_frame_loop_start ;; pass arity-check
+    jmp  error_arity_check
+with_rest:
+    sub   TEMP3, edx
+	jge   rest_loop_prepare ;; pass arity-check
+error_arity_check:
+    push string_arity_error
+    call print_string
+    call prim_exit
+    ; )@@
 	jmp  create_frame_loop_start
+
+; @@(feature rest-param (use arity-check)
+%define NEED_PRINT_REGS
+rest_loop_prepare:
+    push edx ;; save edx
+    push eax ;; save eax
+    lea  eax, [NIL]
+    mov  edx, TEMP3
+    jmp  rest_loop_start
+rest_frame_loop:
+	mov  TEMP3, eax		; remember the frame's head
+	POP_STACK_TO(eax)
+	push FIX(PAIR_TYPE)
+	call alloc_rib		; stack_register <- [arg, stack_register, PAIR_TYPE]
+	mov  eax, stack
+	POP_STACK
+	mov  ebx, TEMP3
+	mov  FIELD1(eax), ebx
+rest_loop_start:
+	dec  edx
+	jns  rest_frame_loop
+	push FIX(PAIR_TYPE)
+    call alloc_rib ;; push result to stack
+    pop eax
+    pop edx
+    inc edx 
+    jmp create_frame_loop_start
+; )@@
 create_frame_loop:
 	mov  TEMP3, eax		; remember the frame's head
 	POP_STACK_TO(eax)
@@ -697,7 +753,6 @@ create_frame_loop:
 create_frame_loop_start:
 	dec  edx
 	jns  create_frame_loop
-
 	mov  edx, TEMP2	      ; get continuation rib
 	cmp  dword FIELD2(pc), FIX(PAIR_TYPE)	; jump? (tail call)
 	je   jump_closure
@@ -906,8 +961,8 @@ prim_dispatch_table:
 	dd   prim_field0set   ;; @@(primitive (field0-set! rib))@@
 	dd   prim_field1set   ;; @@(primitive (field1-set! rib))@@
 	dd   prim_field2set   ;; @@(primitive (field2-set! rib))@@
-	dd   prim_eqv         ;; @@(primitive (eqv? x y) (use bool_to_rib))@@
-	dd   prim_lt          ;; @@(primitive (< x y) (use bool_to_rib))@@
+	dd   prim_eqv         ;; @@(primitive (eqv? x y))@@
+	dd   prim_lt          ;; @@(primitive (< x y))@@
 	dd   prim_add         ;; @@(primitive (+ x y))@@
 	dd   prim_sub         ;; @@(primitive (- x y))@@
 	dd   prim_mul         ;; @@(primitive (* x y))@@
@@ -1158,7 +1213,7 @@ prim_field2set:
 string_isrib	db "rib?",0x0a,0
 %endif
 
-;; @@(feature rib?
+;; @@(feature rib? (use eqv?_feature)
 prim_isrib:
 
 %ifdef DEBUG_PRIM
@@ -1188,7 +1243,7 @@ prim_isrib:
 string_eqv	db "eqv?",0x0a,0
 %endif
 
-;; @@(feature eqv?
+;; @@(feature (or eqv? eqv?_feature) (use <_feature)
 prim_eqv:
 
 %ifdef DEBUG_PRIM
@@ -1217,7 +1272,7 @@ prim_eqv_internal:
 string_lt	db "<",0x0a,0
 %endif
 
-;; @@(feature <
+;; @@(feature (or < <_feature)
 prim_lt:
 
 %ifdef DEBUG_PRIM
@@ -1339,13 +1394,24 @@ raw_int_to_scheme_int:
 	ret
 ;; )@@
 
+;; @@(feature (and raw_int_to_scheme_int (not quotient))
+%ifdef RVM_GEN
+raw_int_to_scheme_int:
+	shl  LAST_ARG, 1
+%if FIX_TAG != 0
+	inc  LAST_ARG
+%endif
+	ret
+%endif
+;; )@@
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 %ifdef DEBUG_PRIM
 string_getchar	db "getchar",0x0a,0
 %endif
 
-;; @@(feature getchar
+;; @@(feature getchar (use raw_int_to_scheme_int)
 prim_getchar:
 
 %ifdef DEBUG_PRIM
@@ -1436,11 +1502,13 @@ prim_exit:
 ;	ret
 ;; )@@
 
+; @@(location prims)@@
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;;; The compressed RVM code
 
-;; @@(replace ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" source
+;; @@(replace ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" (encode 92)
 rvm_code:	db ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y",0 ; RVM code that prints HELLO!
 ;; )@@
 

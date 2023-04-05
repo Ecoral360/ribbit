@@ -1,4 +1,6 @@
+; @@(replace ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" (encode 92)
 (define input ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y") ;; RVM code that prints HELLO!
+; )@@
 
 (cond-expand
   (gambit
@@ -304,12 +306,43 @@
          (else
           #f))
        (let* ((proc (get-var stack opnd))
-              (code (_field0 proc)))
+              (code (_field0 proc))
+              ; @@(feature arity-check (use rest-param)
+              (ncall (_car stack))
+              (stack (_cdr stack))
+              ; )@@
+              )
          (if (_rib? code)
 
              ;; calling a lambda
-             (let ((new-cont (_rib 0 proc 0)))
-               (let loop ((nargs (_field0 code))
+             (let ((new-cont (_rib 0 proc 0))
+                   (nargs (arithmetic-shift (_field0 code) -1))
+                   (vari  (bitwise-and (_field0 code) 1)))
+               ;; @@(feature arity-check
+               (if (or (and (eqv? vari 0)
+                            (not (eqv? nargs ncall)))
+                       (and (eqv? vari 1)
+                            (> nargs ncall)))
+                 (error "*** Arrity check failled"))
+               ;; )@@
+               ;; @@(feature rest-param (use arity-check)
+               (if (eqv? vari 1)
+                 (let rest-loop ((rest _nil)
+                                 (i (- ncall nargs))
+                                 (_stack stack))
+                   (if (< 0 i)
+                     (rest-loop
+                       (_cons (_car _stack) rest)
+                       (- i 1)
+                       (_cdr _stack)
+                       )
+                     (begin 
+                       (set! stack (_cons rest _stack))
+                       (set! nargs (+ 1 nargs))))
+                   )
+                 )
+               ;; )@@
+               (let loop ((nargs nargs)
                           (new-stack new-cont)
                           (stack stack))
                  (if (< 0 nargs)
@@ -411,41 +444,54 @@
   (if x _true _false))
 
 (define primitives
-  (vector (prim3 _rib)             ;; 0
-          (prim1 (lambda (x) x))   ;; 1
-          _cdr                     ;; 2
-          (prim2 (lambda (y x) x)) ;; 3
 
-          (lambda (stack) ;; 4
-            (let* ((x (_car stack)) (stack (_cdr stack)))
-              (_cons (_rib (_field0 x) stack procedure-type) stack)))
+  (vector 
+    ;; @@(primitives (gen body)
+    (prim3 _rib)             ;; @@(primitive (rib a b c))@@
+    (prim1 (lambda (x) x))   ;; @@(primitive (id x))@@
+    _cdr                     ;; @@(primitive (arg1 a b))@@
+    (prim2 (lambda (y x) x)) ;; @@(primitive (arg2 a b))@@
 
-          (prim1 (lambda (x) (boolean (_rib? x)))) ;; 5
-          (prim1 _field0) ;; 6
-          (prim1 _field1) ;; 7
-          (prim1 _field2) ;; 8
-          (prim2 (lambda (x y) (_field0-set! x y) y)) ;; 9
-          (prim2 (lambda (x y) (_field1-set! x y) y)) ;; 10
-          (prim2 (lambda (x y) (_field2-set! x y) y)) ;; 11
-          (prim2 (lambda (x y) (boolean (eqv? x y)))) ;; 12
-          (prim2 (lambda (x y) (boolean (< x y)))) ;; 13
-          (prim2 +) ;; 14
-          (prim2 -) ;; 15
-          (prim2 *) ;; 16
-          (prim2 quotient) ;; 17
+    ;; @@(primitive (close rib)
+    (lambda (stack) ;; 4
+      (let* ((x (_car stack)) (stack (_cdr stack)))
+        (_cons (_rib (_field0 x) stack procedure-type) stack)))
+    ;; )@@
 
-          (prim0 (lambda () ;; 18
-                   (if (< pos (string-length input))
-                       (get-byte)
-                       (let ((c (read-char)))
-                         (if (char? c) (char->integer c) -1)))))
+    (prim1 (lambda (x) (boolean (_rib? x))))    ;; @@(primitive (rib? rib))@@
+    (prim1 _field0)                             ;; @@(primitive (field0 rib))@@
+    (prim1 _field1)                             ;; @@(primitive (field1 rib))@@
+    (prim1 _field2)                             ;; @@(primitive (field2 rib))@@
+    (prim2 (lambda (x y) (_field0-set! x y) y)) ;; @@(primitive (field0-set! rib v))@@
+    (prim2 (lambda (x y) (_field1-set! x y) y)) ;; @@(primitive (field1-set! rib v))@@
+    (prim2 (lambda (x y) (_field2-set! x y) y)) ;; @@(primitive (field2-set! rib v))@@
+    (prim2 (lambda (x y) (boolean (eqv? x y)))) ;; @@(primitive (eqv? x y))@@
+    (prim2 (lambda (x y) (boolean (< x y))))    ;; @@(primitive (< x y))@@
+    (prim2 +)                                   ;; @@(primitive (+ a b))@@
+    (prim2 -)                                   ;; @@(primitive (- a b))@@
+    (prim2 *)                                   ;; @@(primitive (* a b))@@
+    (prim2 quotient)                            ;; @@(primitive (quotient a b))@@
 
-          (prim1 (lambda (x) ;; 19
-                   (write-char (integer->char x))
-                   x))
+    ;; @@(primitive (getchar)
+    (prim0 (lambda () ;; 18
+             (if (< pos (string-length input))
+               (get-byte)
+               (let ((c (read-char)))
+                 (if (char? c) (char->integer c) -1)))))
+    ;; )@@
 
-          (prim1 (lambda (x) ;; 20
-                   (exit x)))))
+    ;; @@(primitive (putchar x)
+    (prim1 (lambda (x) ;; 19
+             (write-char (integer->char x))
+             x))
+    ;; )@@ 
+
+    ;; @@(primitive (exit x)
+    (prim1 (lambda (x) ;; 20
+             (exit x)))
+    ;; )@@
+  ;; )@@
+))
 
 (let ((x (decode)))
   (run (_field2 (_field0 x)) ;; instruction stream of main procedure
