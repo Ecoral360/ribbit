@@ -214,10 +214,14 @@ function2scm = (f) => {
 }
 // )@@
 
-// @@(feature host2scm (use list2scm str2scm bool2scm function2scm)
+// @@(feature host2scm (use list2scm str2scm bool2scm function2scm obj2scm)
 host2scm = (v) => {
-  return ({"number":(x)=>x,"boolean":bool2scm,"string":str2scm,"object":list2scm, 'function':function2scm, 'undefined':()=>NIL}[typeof v](v))
+  return ({"number":(x)=>x,"boolean":bool2scm,"string":str2scm,"object":obj2scm, 'function':function2scm, 'undefined':()=>NIL}[typeof v](v))
 }
+// )@@
+
+// @@(feature obj2scm (use list2scm foreign)
+obj2scm = (o) => Array.isArray(o) ? list2scm(o) : foreign(o)
 // )@@
 
 // @@(feature list2scm (use host2scm)
@@ -267,10 +271,15 @@ scm2function = (r) => {
   let func = (...args) => {
     func_stack.push(pc)
     push(r)
-    for(a in args){
+    for(let a of args){
       push(host2scm(a))
     }
-    pc = [0,args.length,[5, 0, 0]] // call function and then halt
+    let pc_len = args.length;
+    // @@(feature arity-check
+    push(args.length);
+    pc_len++; // there is an extra instruction for arity check
+    // )@@
+    pc = [0,pc_len,[5, 0, 0]] // call function and then halt
     run()
     pc = func_stack.pop()
     return_value = pop()
@@ -299,7 +308,7 @@ scm2host = (r) => {
   if (typeof r === "number")
     return r 
   let tag = r[2]
-  return [scm2list, scm2function, scm2symbol, scm2str, scm2list, scm2bool][tag](r);
+  return [scm2list, scm2function, scm2symbol, scm2str, scm2list, scm2bool, (x) => x[1]][tag](r);
 }
  // )@@
 
@@ -311,6 +320,9 @@ foreign = (r) => [0, r, 6] // 6 is to tag a foreign object
 // @@(feature host_call (use scm2list)
 // f is a foreign object representing a function
 host_call = () =>{
+  // @@(feature arity-check
+  nb_args = pop()
+  // )@@
   args = pop()
   f = pop()[1]
   return push(host2scm(f(...scm2list(args))))
@@ -401,7 +413,7 @@ run = () => {
             // )@@
             while (nparams--) s2 = [pop(),s2,0];
 
-            if (pc[2]===0) {
+            if (pc[2] === 0) {
                 // jump
                 let k = get_cont();
                 c2[0] = k[0];
@@ -411,31 +423,17 @@ run = () => {
                 c2[0] = stack;
                 c2[2] = pc[2];
             }
-            s2 = [var_arg, s2, 0];
-          }
-          while (nargs--) s2 = [pop(), s2, 0];
-
-          if (pc[2] === 0) {
-            // jump
-            let k = get_cont();
-            c2[0] = k[0];
-            c2[2] = k[2];
-          } else {
-            // call
-            c2[0] = stack;
-            c2[2] = pc[2];
-          }
-          stack = s2;
+            stack = s2;
         } else {
-          if (!primitives[c]()) return;
-          if (pc[2] === 0) {
-            // jump
-            c = get_cont();
-            stack[1] = c[0];
-          } else {
-            // call
-            c = pc;
-          }
+            if (!primitives[c]()) return;
+            if (pc[2] === 0) {
+                // jump
+                c = get_cont();
+                stack[1] = c[0];
+            } else {
+                // call
+                c = pc;
+            }
         }
         pc = c;
         break;
