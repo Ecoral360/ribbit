@@ -28,6 +28,13 @@
 
 (define (add-children el children)
   (cond
+    ;; Check if the reactive module is enabled. If so, check if the value is reactive
+    ((and $REACTIVE_MODULE$ ($reactive? children))
+     (let ((child (create-element "span")) (value (children)) (rid (children '$rid)))
+       (set-text child (->string value))
+       ($reactive-add-listener rid (lambda (new-value) (set-text child (->string new-value))))
+       (append-node el child)
+     ))
     ((or (integer? children) (string? children))
       (append-node el (to-html-node children))
       )
@@ -116,7 +123,6 @@
   )
 
 
-(define $rid$ 0)
 
 (define ($typeof x)
   (cond 

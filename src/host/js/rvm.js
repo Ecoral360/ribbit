@@ -277,7 +277,7 @@ scm2function = (r) => {
     let pc_len = args.length;
     // @@(feature arity-check
     push(args.length);
-    pc_len++; // there is an extra instruction for arity check
+    pc_len++;
     // )@@
     pc = [0,pc_len,[5, 0, 0]] // call function and then halt
     run()

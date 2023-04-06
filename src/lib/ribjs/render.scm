@@ -1,3 +1,5 @@
+(define $RENDER_MODULE$ #t)
+
 (define (render main)
   (append-node (element-by-id "app") main)
   )
