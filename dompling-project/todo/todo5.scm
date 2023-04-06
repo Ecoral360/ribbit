@@ -1,4 +1,5 @@
-(define app (element-by-id "app"))
+(ribjs/render)
+(ribjs/reactive)
 
 (append-node 
   (query-selector "head")
@@ -15,17 +16,20 @@
   (let* ((counter (r-new 10))
          (get-counter (r-getter counter))
          (set-counter! (r-setter counter)))
-    (console.log (set-counter! 0))
+
     (<div> '@class "main"
            (<h1> "Hello, World!")
            (<p> "This is a simple example of a web app written
                 in Scheme.")
            (<p> "The counter is currently at " counter ".")
-       (<button> '@on:click (lambda (e) 
-                              (set-counter! (+ (get-counter) 1)))
-                 "Counter + 1"))
+           (<button> 
+             '@on:click (lambda (e) 
+                          (set-counter! (+ (get-counter) 1)))
+             "Counter + 1"
+             )
+           ))
     )
-  )
 
-(append-node app main)
+(render main)
+
 

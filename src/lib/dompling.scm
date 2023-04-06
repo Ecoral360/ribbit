@@ -22,7 +22,11 @@
       )
     (define-primitive (get-attr element attr)
       (use foreign scm2str)
-      "prim2((attr, e) => host2scm(e[1][scm2str(attr)])),"
+      "prim2((attr, e) => host2scm(e[1].getAttribute(scm2str(attr)))),"
+      )
+    (define-primitive (get-text element)
+      (use str2scm)
+      "prim1((e) => str2scm(e[1].innerText)),"
       )
     (define-primitive (set-attr element attr-name attr-value)
       (use host2scm scm2host)
@@ -30,7 +34,7 @@
       )
     (define-primitive (set-text element text)
       (use host2scm scm2host)
-      "prim2((value, e) => host2scm((e[1].innerText = scm2host(value)))),"
+      "prim2((value, e) => host2scm((e[1].innerText = `${scm2host(value)}`))),"
       )
     ;(define-primitive (set-attrs element attrs)
     ;  (use host2scm scm2str list_to_rib rib_to_list)

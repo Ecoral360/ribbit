@@ -1,16 +1,7 @@
-;; A simple DOM manipulation library for ribbit programs targetting js
-
-;; Todos:
-;;    - create a tree like:
-;;        (div '()
-;;            (ol '() (
-;;              (li '() "Hello!")
-;;              (li '() (a '(href "https://www.google.com"))
-;;            )
-;;        )
-;;    -
-;; ribjs needs dompling to work
-
+;; Built on top of dompling, Ribjs is a fully reactive scheme framework to build 
+;; web applications. It is inspired by React and Vue.js.
+;;
+;; To start, you need to get the app element using the function
 
 (define (set-attrs el attrs)
   (if (pair? attrs)
@@ -123,3 +114,42 @@
       )
     )
   )
+
+
+(define $rid$ 0)
+
+(define ($typeof x)
+  (cond 
+    ((string? x) "string")
+    ((integer? x) "number")
+    ((boolean? x) "boolean")
+    ((pair? x) "array")
+    (else "null")
+    )
+  )
+
+(define ($from-html-node el)
+  (let ((type (get-attr el "r-type")))
+    (cond
+      ((string=? type "string") (get-text el))
+      ((string=? type "number") (string->number (get-text el)))
+      ((string=? type "boolean") (string=? (get-text el) "true"))
+      ((string=? type "array") (eval (get-text el)))
+      (else "null")
+      )
+    )
+  )
+
+(define (->string value)
+  (cond
+    ((string? value) value)
+    ((integer? value) (number->string value))
+    ((boolean? value) (if value "true" "false"))
+    ((pair? value) (list->string value))
+    (else "null")
+    )
+  )
+
+
+
+
