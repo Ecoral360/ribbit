@@ -96,7 +96,7 @@
 
     (define-primitive (js-set element property value)
       (use scm2host host2scm)
-      "prim3((value, property, element) => (element[1][scm2host(property)] = scm2host(value), true)),"
+      "prim3((value, property, element) => host2scm(element[1][scm2host(property)] = scm2host(value))),"
       )
 
     )
