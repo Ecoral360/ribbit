@@ -46,7 +46,7 @@
       )
     (define-primitive (add-event element attr-name attr-value)
       (use host2scm scm2host)
-      "prim3((value, name, e) => {e[1].addEventListener(scm2str(name), eval(scm2host(value))); return true;}),"
+      "prim3((value, name, e) => {e[1].addEventListener(scm2str(name), scm2host(value)); return true;}),"
       )
 
     (define-primitive (create-element tag)
@@ -73,6 +73,32 @@
     (define-primitive (get-document)
       "() => push(foreign(document)),"
       )
+
+    (define-primitive (observe-node element callback attribute-filter)
+      (use foreign scm2host scm2function)
+      "prim3((attributes, callback, el) => {
+        const observer = new MutationObserver(mutations => {
+          console.log(mutations);
+          mutations.forEach(mutation => {
+              console.log(mutation);
+              scm2function(callback)(mutation.target[mutation.attributeName]);
+          });
+        });
+        observer.observe(scm2host(el), { attributes: true, attributeFilter: scm2host(attributes) });
+        return true;
+      }),"
+      )
+
+    (define-primitive (js-get element property)
+      (use scm2host host2scm)
+      "prim2((property, element) => host2scm(element[1][scm2host(property)])),"
+      )
+
+    (define-primitive (js-set element property value)
+      (use scm2host host2scm)
+      "prim3((value, property, element) => (element[1][scm2host(property)] = scm2host(value), true)),"
+      )
+
     )
   (else
     (exit -1)

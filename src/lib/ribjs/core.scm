@@ -3,6 +3,46 @@
 ;;
 ;; To start, you need to get the app element using the function
 
+(define (list . args) args)
+
+(define (starts-with str prefix)
+  (and (string? str) (string? prefix)
+       (let ((len (string-length prefix)))
+         (and (<= len (string-length str))
+              (string=? (substring str 0 len) prefix)))))
+
+(define (set-attrs-inner el attr-name value)
+  (cond 
+    ((starts-with attr-name "on-raw:")
+     (add-event el (substring attr-name 7 (string-length attr-name)) value))
+
+    ((starts-with attr-name "on:")
+     (let ((event-name (substring attr-name 3 (string-length attr-name))))
+       (add-event el event-name (lambda (e) (value)))))
+
+    ((starts-with attr-name "bind:")
+     (let ((bind-attr (substring attr-name 5 (string-length attr-name))))
+       (cond 
+         ((string=? bind-attr "value")
+          (add-event el "input" (lambda (e) (value (js-get (js-get e "target") "value"))))
+          (if (and $REACTIVE_MODULE$ ($reactive? value))
+            (value '$add-listener (lambda (new-value) (js-set el "value" new-value)))
+            )
+          )
+         ((string=? bind-attr "checked")
+          (add-event el "check-status" (lambda (e) (value (js-get (js-get e "target") "checked")))))
+         (else (error (string-append "Unknown bind attribute: " bind-attr)))
+         )
+       ))
+
+    ((starts-with attr-name "bind-attr:")
+     (let ((bind-attr (substring attr-name 10 (string-length attr-name))))
+       (observe-node el value (cons bind-attr '()))
+       ))
+
+    (else (set-attr el attr-name value)))
+  )
+
 (define (set-attrs el attrs)
   (if (pair? attrs)
     (if (pair? (car attrs))     ; syntax: (attribute "value")
@@ -10,29 +50,24 @@
               (value (cdr (car attrs)))
               (rest (cdr attrs))
               (attr-name (if (string? attr) attr (symbol->string attr))))
-        (if (string=? (substring attr-name 0 3) "on:")
-          (add-event el (substring attr-name 3 (string-length attr-name)) (eval value))
-          (set-attr el attr-name (eval value))
-          )
+        (set-attrs-inner el attr-name value)
         (set-attrs el rest))
       (let* ((attr (car attrs)) ; syntax: attribute "value"
               (value (cadr attrs))
               (rest (cddr attrs))
               (attr-name (if (string? attr) attr (symbol->string attr))))
-        (if (string=? (substring attr-name 0 3) "on:")
-          (add-event el (substring attr-name 3 (string-length attr-name)) (eval value))
-          (set-attr el attr-name value)
-          )
-        (set-attrs el rest))
+
+          (set-attrs-inner el attr-name value)
+          (set-attrs el rest))
       )))
 
 (define (add-children el children)
   (cond
     ;; Check if the reactive module is enabled. If so, check if the value is reactive
     ((and $REACTIVE_MODULE$ ($reactive? children))
-     (let ((child (create-element "span")) (value (children)) (rid (children '$rid)))
-       (set-text child (->string value))
-       ($reactive-add-listener rid (lambda (new-value) (set-text child (->string new-value))))
+     (let ((child (create-element "span")) (value (children)))
+       (add-children child value)
+       (children '$add-listener (lambda (new-value) (set-text child "") (add-children child new-value)))
        (append-node el child)
      ))
     ((or (integer? children) (string? children))

@@ -5,7 +5,8 @@
   )
 
 (define (global-style style)
-  (append-node (query-selection "head") (<style> style))
+  (append-node (query-selector "head") (<style> style))
   )
+
 
 
