@@ -307,6 +307,8 @@ scm2symbol = (r) => {
 scm2host = (r) => {
   if (typeof r === "number")
     return r 
+  if (r === undefined)
+    return undefined
   let tag = r[2]
   return [scm2list, scm2function, scm2symbol, scm2str, scm2list, scm2bool, (x) => x[1]][tag](r);
 }
