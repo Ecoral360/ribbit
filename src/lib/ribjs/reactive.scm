@@ -102,5 +102,67 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
     )
   )
 
+(define (zip list1 list2)
+  (let ((el1 (if (null? list1) '() (car list1)))
+        (el2 (if (null? list2) '() (car list2)))
+        (rest1 (if (null? list1) '() (cdr list1)))
+        (rest2 (if (null? list2) '() (cdr list2))))
+    (if (and (null? el1) (null? el2))
+      '()
+      (cons (list el1 el2) (zip rest1 rest2)))
+    ))
+
+;; Zips and stops when list1 is done
+(define (zip-l1 list1 list2)
+  (let ((el1 (car list1))
+        (el2 (if (null? list2) '() (car list2)))
+        (rest2 (if (null? list2) '() (cdr list2))))
+    (if (null? el1)
+      '()
+      (cons (list el1 el2) (zip-l1 (cdr list1) rest2)))
+    ))
+
+(define (rmap-change f reactive-list)
+  (let ((old-list (reactive-list))
+        (reactive-mapper
+          (rbind (lambda ()
+                   (let ((new-list
+                           (map (lambda (pair)
+                                  (if (not (equal? (car pair) (cadr pair)))
+                                    (f (car pair)) ; if old != new
+                                    (car pair))
+                                  ) 
+                                (zip-l1 (reactive-list) old-list))))
+                     (set! old-list (reactive-list))
+                     new-list
+                     ))
+                 (list reactive-list))))
+    reactive-mapper
+  ))
+
+
+(define (rlist-tail reactive-list i)
+  (let ((reactive-tail 
+          (rbind (lambda ()
+                   (if (>= i (list-length (reactive-list)))
+                     ; if i is greater than the length of the list, return the whole list
+                     (reactive-list)                    
+                     (list-tail (reactive-list) i))
+                   )
+                 (list reactive-list))))
+    reactive-tail
+    ))
+
+(define (rlist-ref reactive-list i)
+  (let ((reactive-ref 
+          (rbind (lambda ()
+                   (if (>= i (list-length (reactive-list)))
+                     ; if i is greater than the length of the list, return '()
+                     '()
+                     (list-ref (reactive-list) i))
+                   )
+                 (list reactive-list))))
+    reactive-ref
+    ))
 
 

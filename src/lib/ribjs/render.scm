@@ -8,5 +8,7 @@
   (append-node (query-selector "head") (<style> style))
   )
 
-
+(define (set-title title) 
+  (set-text (query-selector "head > title") title)
+            )
 

@@ -269,10 +269,10 @@ scm2list = (r) => {
 func_stack = []
 scm2function = (r) => {
   let func = (...args) => {
-    func_stack.push(pc)
-    push(r)
+    func_stack.push(pc);
+    push(r);
     for(let a of args){
-      push(host2scm(a))
+      push(host2scm(a));
     }
     let pc_len = args.length;
     // @@(feature arity-check
@@ -280,12 +280,12 @@ scm2function = (r) => {
     pc_len++;
     // )@@
     pc = [0,pc_len,[5, 0, 0]] // call function and then halt
-    run()
-    pc = func_stack.pop()
-    return_value = pop()
-    return scm2host(return_value)
+    run();
+    pc = func_stack.pop();
+    return_value = pop();
+    return scm2host(return_value);
   }
-  return func
+  return func;
 }
 // )@@
 
@@ -377,7 +377,7 @@ run = () => {
 
         // if (is_rib(n_passed_args)) push(n_passed_args);
         if (show_opnd(o) === "sym console.log") {
-          //  pop();
+          // pop();
         }
 
         o = get_opnd(o)[0];
