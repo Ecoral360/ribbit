@@ -7,9 +7,18 @@ that has the following properties:
 - It is a _readonly_ reactive variable (i.e. you can get its value and attach 
 listeners like a normal reactive variable, but you cannot set its value manually)
 
-- It is defined by a function that doesn't take any argument and a list of dependencies.
-Each dependency must be a reactive variable (of any kind, including another 
-reactive binding)
+- It is defined by a function that doesn't take any argument (its _update-function_)
+and a list of dependencies. Each dependency must be a reactive variable (of 
+any kind, including another reactive binding). 
+
+- The _update-function_ is called once when the reactive binding is created to set 
+its internal value.
+
+- The _update-function_ will NOT be called each time you call the reactive 
+binding. Instead, the _update-function_ will ONLY be called to update the 
+internal value of the reactive binding **when one of its dependency changes**. 
+This means that, when you call a reactive binding, you only get the up-to-date 
+internal value of the reactive binding.
 
 
 ## How can they be used?
