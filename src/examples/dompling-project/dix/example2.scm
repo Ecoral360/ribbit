@@ -4,6 +4,7 @@
 
 (define (TodoItem text)
   (let ((checked (reactive #f)))
+	(console.log text)
     (<p>
       (<input> '@type "checkbox" '@bind:checked checked
                '@on:change (lambda () 
@@ -15,7 +16,7 @@
   ))
 
 (define main
-  (let ((items (reactive (list "Milk" "Eggs" "Bread")))
+  (let ((items (reactive-list (list "Milk" "Eggs" "Bread")))
         (new-item (reactive "")))
     (<div> '@style "display: flex; flex-direction: column; 
            align-items: center; justify-content: center;"
@@ -28,7 +29,7 @@
       (<button> '@on:click (lambda ()
                              (if (not (string=? "" (new-item)))
                                (begin
-                                 (items (append (items) (list (new-item)))) 
+                                 (rappend! items (new-item))
                                  (new-item ""))))
                 "Add item")
       )
