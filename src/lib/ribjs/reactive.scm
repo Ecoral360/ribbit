@@ -25,6 +25,9 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
                 ((equal? method '$add-listener)
                  (set! callbacks (append callbacks (list1 (car args)))))
 
+				((equal? method '$reactive-type)
+				 '$reactive-variable$)
+
                 (else (error "Unknown method " method))
                 )
               '()
@@ -60,6 +63,10 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
                     (set! value (f))
                     (for-each (lambda (callback) (callback value))
                               callbacks))))
+
+	(if (not (pair? dependencies))
+	  (set! dependencies (list dependencies)))
+
     ; when a dependency changes
     (for-each (lambda (dependency) 
                 (dependency '$add-listener factory))
@@ -78,6 +85,9 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
               (cond
                 ((equal? method '$add-listener)
                  (set! callbacks (append callbacks (list1 (car args)))))
+
+				((equal? method '$reactive-type)
+				 '$reactive-binding$)
 
                 (else (error "Unknown method " method))
                 )
@@ -165,4 +175,11 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
     reactive-ref
     ))
 
+
+(define (rmap-lazy)
+  )
+
+(define (rappend! reactive-list new-element)
+
+  )
 
