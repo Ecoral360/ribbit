@@ -4,6 +4,17 @@
 ;; To start, you need to get the app element using the function
 
 (define (list . args) args)
+(define (range start stop step)
+  (let ((result '()))
+	(let loop ((i start))
+	  (if (>= i stop)
+		result
+		(begin (set! result (cons i result))
+			   (loop (+ i step))
+			   )
+		)
+	  )
+	))
 
 (define (starts-with str prefix)
   (and (string? str)
@@ -132,6 +143,7 @@
 (define (<ul> . args) (component "ul" args))
 (define (<li> . args) (component "li" args))
 (define (<style> . args) (component "style" args))
+(define (<canvas> . args) (component "canvas" args))
 
 (define <br> (lambda () (create-element "br")))
 

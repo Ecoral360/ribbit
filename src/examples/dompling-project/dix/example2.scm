@@ -16,7 +16,7 @@
   ))
 
 (define main
-  (let ((items (reactive-list (list "Milk" "Eggs" "Bread")))
+  (let ((items (reactive (list "Milk" "Eggs" "Bread")))
         (new-item (reactive "")))
     (<div> '@style "display: flex; flex-direction: column; 
            align-items: center; justify-content: center;"
@@ -31,10 +31,10 @@
                                (begin
                                  (rappend! items (new-item))
                                  (new-item ""))))
-                "Add item")
+               "Add item")
       )
     ))
 
-(render main)
 
+(render main)
 

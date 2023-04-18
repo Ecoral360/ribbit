@@ -1,0 +1,2388 @@
+     1                                  ;;; This is an implementation of the Ribbit Virtual Machine as an
+     2                                  ;;; x86-32 program for execution on linux. The NASM assembler must be
+     3                                  ;;; used to create an executable program.  See the asm2exe.sh script.
+     4                                  ;;;
+     5                                  ;;; It uses a very compact ELF header which is explained in the
+     6                                  ;;; delightful article:
+     7                                  ;;;
+     8                                  ;;; A Whirlwind Tutorial on Creating Really Teensy ELF Executables for Linux
+     9                                  ;;; by Brian Raiter.
+    10                                  ;;; http://muppetlabs.com/~breadbox/software/tiny/teensy.html
+    11                                  ;;;
+    12                                  ;;; We use the 91 byte version for simplicity, but the article
+    13                                  ;;; explains a 45 byte version!
+    14                                  
+    15                                  ;;; ######################################## Beginning of ELF header
+    16                                  
+    17                                  	BITS 32
+    18                                  
+    19                                          org     0x08048000
+    20                                  
+    21                                  ehdr:                                                 ; Elf32_Ehdr
+    22 00000000 7F454C4601010100                      db      0x7F, "ELF", 1, 1, 1, 0         ;   e_ident
+    23 00000008 00<rep 8h>                    times 8 db      0
+    24 00000010 0200                                  dw      2                               ;   e_type
+    25 00000012 0300                                  dw      3                               ;   e_machine
+    26 00000014 01000000                              dd      1                               ;   e_version
+    27 00000018 [54000000]                            dd      _start                          ;   e_entry
+    28 0000001C 34000000                              dd      phdr - $$                       ;   e_phoff
+    29 00000020 00000000                              dd      0                               ;   e_shoff
+    30 00000024 00000000                              dd      0                               ;   e_flags
+    31 00000028 3400                                  dw      ehdrsize                        ;   e_ehsize
+    32 0000002A 2000                                  dw      phdrsize                        ;   e_phentsize
+    33 0000002C 0100                                  dw      1                               ;   e_phnum
+    34 0000002E 0000                                  dw      0                               ;   e_shentsize
+    35 00000030 0000                                  dw      0                               ;   e_shnum
+    36 00000032 0000                                  dw      0                               ;   e_shstrndx
+    37                                  
+    38                                  ehdrsize      equ     $ - ehdr
+    39                                  
+    40                                  phdr:                                                 ; Elf32_Phdr
+    41 00000034 01000000                              dd      1                               ;   p_type
+    42 00000038 00000000                              dd      0                               ;   p_offset
+    43 0000003C [00000000]                            dd      $$                              ;   p_vaddr
+    44 00000040 [00000000]                            dd      $$                              ;   p_paddr
+    45 00000044 E5040000                              dd      filesize                        ;   p_filesz
+    46 00000048 E5040000                              dd      filesize                        ;   p_memsz
+    47 0000004C 05000000                              dd      5                               ;   p_flags
+    48 00000050 00100000                              dd      0x1000                          ;   p_align
+    49                                  
+    50                                  phdrsize      equ     $ - phdr
+    51                                  
+    52                                  _start:
+    53                                  
+    54                                  ;;; ######################################## Beginning of RVM
+    55                                  
+    56                                  %if 0
+    57                                  %define DEBUG
+    58                                  %define DEBUG_INSTR
+    59                                  %define DEBUG_PRIM
+    60                                  %endif
+    61                                  
+    62                                  %if 0 ;; @@(replace "0" "1")@@
+    63                                  %define RVM_GEN
+    64                                  %endif
+    65                                  
+    66                                  %ifdef DEBUG
+    67                                  %define NEED_PRINT_REGS
+    68                                  %endif
+    69                                  
+    70                                  %define WORD_SIZE       4
+    71                                  %define RIB_SIZE_WORDS  4
+    72                                  %define HEAP_SIZE_RIBS  300000
+    73                                  
+    74                                  %define SYS_EXIT        1
+    75                                  %define SYS_READ        3
+    76                                  %define SYS_WRITE       4
+    77                                  %define SYS_MMAP        90
+    78                                  %define MAP_PRIVATE     2
+    79                                  %define MAP_ANONYMOUS   32
+    80                                  
+    81                                  %define PROT_READ       0x1
+    82                                  %define PROT_WRITE      0x2
+    83                                  
+    84                                  %define CALL_KERNEL     int 0x80
+    85                                  
+    86                                  %define STDIN  0
+    87                                  %define STDOUT 1
+    88                                  
+    89                                  ;;; register assignment
+    90                                  %define heap_base    ebp
+    91                                  %define heap_alloc   edi
+    92                                  %define rvm_code_ptr esi
+    93                                  %define pc           esi
+    94                                  %define stack        ecx
+    95                                  
+    96                                  ;;; representation of fixnums and ribs (FIX_TAG can be 0 or 1)
+    97                                  %define FIX_TAG 1
+    98                                  %define FIX(n)  ((n)*2+FIX_TAG)
+    99                                  %define RIB_TAG (1-FIX_TAG)
+   100                                  
+   101                                  ;;; type codes of Scheme objects
+   102                                  %define PAIR_TYPE       0
+   103                                  %define PROCEDURE_TYPE  1
+   104                                  %define SYMBOL_TYPE     2
+   105                                  %define STRING_TYPE     3
+   106                                  %define VECTOR_TYPE     4
+   107                                  %define SINGLETON_TYPE  5
+   108                                  
+   109                                  ;;; first 4 ribs of heap are preallocated for #f, #t, (), and "rib" procedure
+   110                                  %define FALSE    heap_base
+   111                                  %define TRUE     heap_base+WORD_SIZE*RIB_SIZE_WORDS*1
+   112                                  %define NIL      heap_base+WORD_SIZE*RIB_SIZE_WORDS*2
+   113                                  %define RIB_PROC heap_base+WORD_SIZE*RIB_SIZE_WORDS*3
+   114                                  %define PREALLOCATED_RIBS 4
+   115                                  
+   116                                  %define SYMBOL_TABLE FIELD1(RIB_PROC)
+   117                                  %define TEMP0        FIELD0(TRUE)
+   118                                  %define TEMP1        FIELD1(TRUE)
+   119                                  %define TEMP2        FIELD0(NIL)
+   120                                  %define TEMP3        FIELD1(NIL)
+   121                                  
+   122                                  %define FIELD0(x) [x-RIB_TAG+WORD_SIZE*0]
+   123                                  %define FIELD1(x) [x-RIB_TAG+WORD_SIZE*1]
+   124                                  %define FIELD2(x) [x-RIB_TAG+WORD_SIZE*2]
+   125                                  %define FIELD3(x) [x-RIB_TAG+WORD_SIZE*3]
+   126                                  
+   127                                  ;;; the RVM encodes instructions with codes in the range 0 .. MAX_CODE
+   128                                  %define MAX_CODE 91
+   129                                  
+   130                                  %define INSTR_JUMP_CALL  0
+   131                                  %define INSTR_SET        1
+   132                                  %define INSTR_GET        2
+   133                                  %define INSTR_CONST      3
+   134                                  %define INSTR_CONST_PROC 3
+   135                                  %define INSTR_IF         4
+   136                                  %define INSTR_HALT       5
+   137                                  
+   138                                  %define SHORT_JUMP       20
+   139                                  %define SHORT_CALL       30
+   140                                  %define SHORT_SET        0
+   141                                  %define SHORT_GET        10
+   142                                  %define SHORT_CONST      11
+   143                                  %define SHORT_CONST_PROC 4
+   144                                  
+   145                                  %macro movC 2
+   146                                  %if %2 == 0
+   147                                  	xor  %1, %1
+   148                                  %elif %2 == -1
+   149                                  	xor  %1, %1
+   150                                  	dec  %1
+   151                                  %elif %2 == 1
+   152                                  	xor  %1, %1
+   153                                  	inc  %1
+   154                                  %elif %2 >= -128 && %2 <= 127
+   155                                  	push %2
+   156                                  	pop  %1
+   157                                  %else
+   158                                  	mov  %1, %2
+   159                                  %endif
+   160                                  %endmacro
+   161                                  
+   162                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   163                                  
+   164                                  alloc_heap:
+   165                                  
+   166                                  ;;; allocate fixed size heap using mmap
+   167                                  
+   168 00000054 6A00                    	push 0					; mmap offset
+   169 00000056 6AFF                    	push -1					; mmap fd
+   170 00000058 6A22                    	push MAP_ANONYMOUS + MAP_PRIVATE	; mmap flags
+   171 0000005A 6A03                    	push PROT_READ + PROT_WRITE 		; mmap prot
+   172 0000005C 68003E4900              	push WORD_SIZE * RIB_SIZE_WORDS * HEAP_SIZE_RIBS 	; mmap length
+   173 00000061 6A00                    	push 0				    	; mmap addr
+   174 00000063 89E3                    	mov  ebx, esp
+   175                                  	movC eax, SYS_MMAP
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155 00000065 6A5A                <1>  push %2
+   156 00000067 58                  <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   176 00000068 CD80                    	CALL_KERNEL
+   177                                  ;	add  esp, WORD_SIZE*6		; OK to leave garbage on stack
+   178                                  
+   179 0000006A 89C5                    	mov  heap_base, eax		; save heap base for convenient access
+   180                                  
+   181                                  %ifdef SAFE
+   182                                  
+   183                                  ;;; check if returned address is valid (multiple of 4096)
+   184                                  
+   185                                  	and  ax, 4095
+   186                                  	jz   init_heap
+   187                                  
+   188                                  %ifdef DEBUG
+   189                                  	push heap_error_msg
+   190                                  	call print_string
+   191                                  %endif
+   192                                  
+   193                                  	movC ebx, 1			; return error code 1
+   194                                  	movC eax, SYS_EXIT
+   195                                  	CALL_KERNEL
+   196                                  
+   197                                  %ifdef DEBUG
+   198                                  heap_error_msg:	db "*** ERROR -- could not allocate heap",0x0a,0
+   199                                  %endif
+   200                                  
+   201                                  %endif
+   202                                  
+   203                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   204                                  
+   205                                  init_heap:
+   206                                  
+   207                                  %if RIB_TAG != 0
+   208                                  	inc  heap_base
+   209                                  %endif
+   210 0000006C 89EF                    	mov  heap_alloc, heap_base
+   211 0000006E 6A0B                    	push FIX(SINGLETON_TYPE)
+   212 00000070 58                      	pop  eax
+   213 00000071 B110                    	mov  cl, PREALLOCATED_RIBS * RIB_SIZE_WORDS
+   214                                  init_heap_loop1:
+   215 00000073 8907                    	mov  [heap_alloc-RIB_TAG], eax
+   216 00000075 83C704                  	add  heap_alloc, WORD_SIZE
+   217 00000078 FEC9                    	dec  cl
+   218 0000007A 75F7                    	jne  init_heap_loop1
+   219                                  
+   220                                  	movC ecx, HEAP_SIZE_RIBS - PREALLOCATED_RIBS
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158 0000007C B9DC930400          <1>  mov %1, %2
+   159                              <1> %endif
+   221                                  	movC ebx, 0
+   146                              <1> %if %2 == 0
+   147 00000081 31DB                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   222                                  init_heap_loop2:
+   223 00000083 891F                    	mov  FIELD0(heap_alloc), ebx
+   224 00000085 89470C                  	mov  FIELD3(heap_alloc), eax
+   225 00000088 89FB                    	mov  ebx, heap_alloc
+   226 0000008A 83C710                  	add  heap_alloc, WORD_SIZE * RIB_SIZE_WORDS
+   227 0000008D 49                      	dec  ecx
+   228 0000008E 75F3                    	jne  init_heap_loop2
+   229                                  
+   230 00000090 89DF                    	mov  heap_alloc, ebx
+   231                                  
+   232 00000092 8D4510                  	lea  eax, [TRUE]
+   233 00000095 894500                  	mov  FIELD0(FALSE), eax
+   234 00000098 8D4520                  	lea  eax, [NIL]
+   235 0000009B 894504                  	mov  FIELD1(FALSE), eax
+   236                                  
+   237 0000009E 894534                  	mov  SYMBOL_TABLE, eax		; init symbol table to NIL
+   238                                  
+   239                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   240                                  
+   241                                  %ifdef DEBUG
+   242                                  	push rvm_code
+   243                                  	call print_string
+   244                                  	mov  al, 0x0a
+   245                                  	call putchar
+   246                                  %endif
+   247                                  
+   248                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   249                                  
+   250                                  %macro get_byte 0
+   251                                  	mov  al, [rvm_code_ptr]
+   252                                  	inc  rvm_code_ptr
+   253                                  %ifdef DEBUG
+   254                                  	push eax
+   255                                  	call putchar
+   256                                  	pop  eax
+   257                                  %endif
+   258                                  %endmacro
+   259                                  
+   260                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   261                                  
+   262                                  build_symbol_table:
+   263 000000A1 BE[B5040000]            	mov  rvm_code_ptr, rvm_code
+   264                                  	movC eax, 0	 	; start accumulating at 0
+   146                              <1> %if %2 == 0
+   147 000000A6 31C0                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   265 000000A8 E847000000              	call get_int
+   266 000000AD 89C2                    	mov  edx, eax		; edx = number of anonymous symbols to create
+   267 000000AF EB0A                    	jmp  build_symbol_table_loop1_start
+   268                                  
+   269                                  build_symbol_table_loop1:
+   270 000000B1 8D4520                  	lea  eax, [NIL]		; symbol name = empty
+   271                                  	movC stack, 0		; symbol name length = 0
+   146                              <1> %if %2 == 0
+   147 000000B4 31C9                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   272 000000B6 E87E000000              	call alloc_symbol	; create symbol and add it to symbol table
+   273                                  build_symbol_table_loop1_start:
+   274 000000BB 4A                      	dec  edx
+   275 000000BC 79F3                    	jns  build_symbol_table_loop1
+   276                                  
+   277                                  build_symbol_table_loop2:
+   278 000000BE 8D4D20                  	lea  stack, [NIL]	; character accumulator
+   279                                  	movC edx, 0		; edx = number of characters accumulated
+   146                              <1> %if %2 == 0
+   147 000000C1 31D2                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   280                                  
+   281                                  build_symbol_table_loop3:
+   282                                  	movC eax, 0
+   146                              <1> %if %2 == 0
+   147 000000C3 31C0                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   283                                  	get_byte		; get next character
+   251 000000C5 8A06                <1>  mov al, [rvm_code_ptr]
+   252 000000C7 46                  <1>  inc rvm_code_ptr
+   253                              <1> %ifdef DEBUG
+   254                              <1>  push eax
+   255                              <1>  call putchar
+   256                              <1>  pop eax
+   257                              <1> %endif
+   284 000000C8 3C2C                    	cmp  al, 44		; "," ?
+   285 000000CA 0F8497000000            	je   build_symbol_table_symbol
+   286 000000D0 3C3B                    	cmp  al, 59		; ";" ?
+   287 000000D2 0F848F000000            	je   build_symbol_table_symbol
+   288                                  
+   289 000000D8 D1E0                    	shl  eax, 1		; convert character to fixnum
+   290                                  %if FIX_TAG != 0
+   291 000000DA 40                      	inc  eax
+   292                                  %endif
+   293 000000DB 6A01                    	push FIX(PAIR_TYPE)
+   294 000000DD E829000000              	call alloc_rib		; stack_register <- [eax, stack_register, PAIR_TYPE]
+   295 000000E2 42                      	inc  edx		; increment character count
+   296 000000E3 EBDE                    	jmp  build_symbol_table_loop3
+   297                                  
+   298                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   299                                  
+   300                                  get_code:
+   301                                  	movC eax, 0
+   146                              <1> %if %2 == 0
+   147 000000E5 31C0                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   302                                  	get_byte
+   251 000000E7 8A06                <1>  mov al, [rvm_code_ptr]
+   252 000000E9 46                  <1>  inc rvm_code_ptr
+   253                              <1> %ifdef DEBUG
+   254                              <1>  push eax
+   255                              <1>  call putchar
+   256                              <1>  pop eax
+   257                              <1> %endif
+   303 000000EA 2C23                    	sub  al, 35
+   304 000000EC 7302                    	jae  get_code_done
+   305 000000EE B039                    	mov  al, 57
+   306                                  get_code_done:
+   307 000000F0 C3                      	ret
+   308                                  
+   309                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   310                                  
+   311                                  get_int_loop:
+   312 000000F1 83E82E                  	sub  eax, (MAX_CODE+1)/2
+   313                                  get_int:
+   314 000000F4 52                      	push edx
+   315                                  	movC edx, (MAX_CODE+1)/2
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155 000000F5 6A2E                <1>  push %2
+   156 000000F7 5A                  <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   316 000000F8 F7E2                    	mul  edx
+   317 000000FA 89C2                    	mov  edx, eax
+   318 000000FC E8E4FFFFFF              	call get_code
+   319 00000101 01C2                    	add  edx, eax
+   320 00000103 2C2E                    	sub  al, (MAX_CODE+1)/2
+   321 00000105 89D0                    	mov  eax, edx
+   322 00000107 5A                      	pop  edx
+   323 00000108 73E7                    	jae  get_int_loop
+   324 0000010A C3                      	ret
+   325                                  
+   326                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   327                                  
+   328                                  alloc_rib:
+   329                                  
+   330                                  ;;; Creates a rib containing:
+   331                                  ;;;   field 0 = eax
+   332                                  ;;;   field 1 = stack_register
+   333                                  ;;;   field 2 = last value pushed on stack before call
+   334                                  ;;; The stack_register will be a reference to the allocated rib.
+   335                                  ;;; If the rib was the last free rib, a garbage collection is initiated.
+   336                                  ;;; When the control returns to the caller the heap has at least
+   337                                  ;;; one free rib.
+   338                                  
+   339 0000010B 894F04                  	mov  FIELD1(heap_alloc), stack	; store field 1
+   340 0000010E 8B4C2404                	mov  stack, [esp+WORD_SIZE*1]
+   341 00000112 894F08                  	mov  FIELD2(heap_alloc), stack	; store field 2
+   342 00000115 8B0F                    	mov  stack, FIELD0(heap_alloc)	; remember next rib
+   343 00000117 8907                    	mov  FIELD0(heap_alloc), eax	; store field 0
+   344 00000119 87F9                    	xchg heap_alloc, stack
+   345 0000011B 83FF00                  	cmp  heap_alloc, 0	; last free rib?
+   346 0000011E 750E                    	jne  alloc_rib_done
+   347                                  
+   348                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   349                                  
+   350                                  gc:
+   351 00000120 894D10                  	mov  TEMP0, stack
+   352 00000123 897514                  	mov  TEMP1, pc
+   353                                  
+   354                                  	;; TODO!
+   355                                  
+   356 00000126 EB09                    	jmp  heap_overflow
+   357                                  
+   358 00000128 8B4D10                  	mov  stack, TEMP0
+   359 0000012B 8B7514                  	mov  pc, TEMP1
+   360                                  
+   361                                  alloc_rib_done:
+   362 0000012E C20400                  	ret  WORD_SIZE*1
+   363                                  
+   364                                  heap_overflow:
+   365                                  
+   366                                  %ifdef DEBUG
+   367                                  	push heap_overflow_msg
+   368                                  	call print_string
+   369                                  %endif
+   370                                  
+   371                                  	movC ebx, 2			; return error code 2
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155 00000131 6A02                <1>  push %2
+   156 00000133 5B                  <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   372                                  	movC eax, SYS_EXIT
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152 00000134 31C0                <1>  xor %1, %1
+   153 00000136 40                  <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   373 00000137 CD80                    	CALL_KERNEL
+   374                                  
+   375                                  %ifdef DEBUG
+   376                                  heap_overflow_msg:	db "*** ERROR -- heap overflow",0x0a,0
+   377                                  %endif
+   378                                  
+   379                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   380                                  
+   381                                  alloc_symbol:
+   382                                  
+   383                                  ;;; Creates a symbol from the list of characters in its name
+   384                                  ;;; eax = character list, stack_register = character count
+   385                                  
+   386 00000139 D1E1                    	shl  stack, 1		; convert string's length to fixnum
+   387                                  %if FIX_TAG != 0
+   388 0000013B 41                      	inc  stack
+   389                                  %endif
+   390 0000013C 6A07                    	push FIX(STRING_TYPE)
+   391 0000013E E8C8FFFFFF              	call alloc_rib		; create symbol's name (as a string)
+   392 00000143 89E8                    	mov  eax, FALSE		; global variable's value
+   393 00000145 6A05                    	push FIX(SYMBOL_TYPE)
+   394 00000147 E8BFFFFFFF              	call alloc_rib		; create symbol
+   395 0000014C 6A01                    	push FIX(PAIR_TYPE)
+   396 0000014E 89C8                    	mov  eax, stack		; add it to symbol table
+   397 00000150 8B4D34                  	mov  stack, SYMBOL_TABLE
+   398 00000153 E8B3FFFFFF              	call alloc_rib		; create pair at head of symbol table
+   399 00000158 894D34                  	mov  SYMBOL_TABLE, stack
+   400                                  
+   401 0000015B C3                      	ret
+   402                                  
+   403                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   404                                  
+   405                                  init_global:
+   406 0000015C 8B02                    	mov  eax, FIELD0(edx)
+   407 0000015E 8908                    	mov  FIELD0(eax), stack
+   408 00000160 8B5204                  	mov  edx, FIELD1(edx)
+   409 00000163 8D4910                  	lea  stack, [stack+WORD_SIZE*RIB_SIZE_WORDS]
+   410 00000166 C3                      	ret
+   411                                  
+   412                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   413                                  
+   414                                  build_symbol_table_symbol:
+   415 00000167 89C3                    	mov  ebx, eax
+   416 00000169 89C8                    	mov  eax, stack
+   417 0000016B 89D1                    	mov  stack, edx
+   418 0000016D E8C7FFFFFF              	call alloc_symbol	; eax = character list, stack_register = character count
+   419 00000172 80FB3B                  	cmp  bl, 59		; ";" ?
+   420 00000175 0F8543FFFFFF            	jne  build_symbol_table_loop2
+   421                                  
+   422                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   423                                  
+   424                                  init_globals:
+   425                                  
+   426                                  ;;; Initializes global variables "rib", "false", "true", and "nil"
+   427                                  
+   428                                  	movC edx, FIX(0)	; create "rib" primitive (always at index 0)
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152 0000017B 31D2                <1>  xor %1, %1
+   153 0000017D 42                  <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   429 0000017E 895530                  	mov  FIELD0(RIB_PROC), edx
+   430                                  	movC edx, FIX(PROCEDURE_TYPE)
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155 00000181 6A03                <1>  push %2
+   156 00000183 5A                  <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   431 00000184 895538                  	mov  FIELD2(RIB_PROC), edx
+   432                                  
+   433 00000187 8B5534                  	mov  edx, SYMBOL_TABLE
+   434 0000018A 8D4D30                  	lea  stack, [RIB_PROC]
+   435 0000018D E8CAFFFFFF              	call init_global	; set "rib"
+   436 00000192 89E9                    	mov  stack, FALSE
+   437 00000194 E8C3FFFFFF              	call init_global	; set "false"
+   438 00000199 E8BEFFFFFF              	call init_global	; set "true"
+   439 0000019E E8B9FFFFFF              	call init_global	; set "nil"
+   440                                  
+   441                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   442                                  
+   443                                  decompress:
+   444                                  	movC stack, FALSE	; stack <- #f
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158 000001A3 89E9                <1>  mov %1, %2
+   159                              <1> %endif
+   445 000001A5 EB31                    	jmp  decompress_loop
+   446                                  
+   447                                  decompress_jump:
+   448 000001A7 50                      	push eax
+   449                                  	movC eax, FIX(INSTR_IF)	; in case this is an if instruction
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155 000001A8 6A09                <1>  push %2
+   156 000001AA 58                  <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   450 000001AB 6A01                    	push FIX(0)
+   451 000001AD E859FFFFFF              	call alloc_rib		; stack_register <- [fixnum INSTR_IF, stack_register, fixnum 0]
+   452 000001B2 58                      	pop  eax
+   453 000001B3 EB56                    	jmp  decompress_instr
+   454                                  
+   455                                  decompress_create_instr_const_proc:
+   456 000001B5 FECE                    	dec  dh			; convert to INSTR_CONST
+   457                                  
+   458                                  decompress_create_instr:
+   459 000001B7 50                      	push eax		; push operand
+   460                                  	movC eax, 0
+   146                              <1> %if %2 == 0
+   147 000001B8 31C0                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   461 000001BA 88F0                    	mov  al, dh
+   462 000001BC D1E0                    	shl  eax, 1		; convert operator to fixnum
+   463                                  %if FIX_TAG != 0
+   464 000001BE 40                      	inc  eax
+   465                                  %endif
+   466 000001BF E847FFFFFF              	call alloc_rib		; stack_register <- [operator, stack_register, operand]
+   467                                  
+   468                                  decompress_if:
+   469                                  decompress_append_instr:
+   470 000001C4 89C8                    	mov  eax, stack
+   471 000001C6 8B4804                  	mov  stack, FIELD1(eax)
+   472 000001C9 8B5008                  	mov  edx, FIELD2(eax)
+   473 000001CC 895004                  	mov  FIELD1(eax), edx
+   474 000001CF 8B5108                  	mov  edx, FIELD2(stack)
+   475 000001D2 895008                  	mov  FIELD2(eax), edx
+   476 000001D5 894108                  	mov  FIELD2(stack), eax
+   477                                  
+   478                                  %ifdef DEBUG
+   479                                  
+   480                                  	push eax
+   481                                  	movC eax, 32
+   482                                  	call putchar
+   483                                  	pop  eax
+   484                                  	push eax
+   485                                  	call print_word_hex
+   486                                  	push eax
+   487                                  	movC eax, 58
+   488                                  	call putchar
+   489                                  	movC eax, 32
+   490                                  	call putchar
+   491                                  	pop  eax
+   492                                  	push dword FIELD0(eax)
+   493                                  	call print_word_hex
+   494                                  	push eax
+   495                                  	movC eax, 32
+   496                                  	call putchar
+   497                                  	pop  eax
+   498                                  	push dword FIELD1(eax)
+   499                                  	call print_word_hex
+   500                                  	push eax
+   501                                  	movC eax, 32
+   502                                  	call putchar
+   503                                  	pop  eax
+   504                                  	push dword FIELD2(eax)
+   505                                  	call print_word_hex
+   506                                  	push eax
+   507                                  	movC eax, 0x0a
+   508                                  	call putchar
+   509                                  	pop  eax
+   510                                  
+   511                                  %endif
+   512                                  
+   513                                  decompress_loop:
+   514 000001D8 E808FFFFFF              	call get_code		; eax <- next code
+   515 000001DD 3C5B                    	cmp  al, MAX_CODE
+   516 000001DF 74E3                    	je   decompress_if
+   517 000001E1 89C2                    	mov  edx, eax		; side effect: sets dh to 0 and dl to al
+   518 000001E3 2C17                    	sub  al, SHORT_JUMP+3
+   519 000001E5 72C0                    	jb   decompress_jump
+   520                                  
+   521                                  decompress_not_jump:
+   522 000001E7 88C2                    	mov  dl, al
+   523 000001E9 2C21                    	sub  al, SHORT_CALL+3
+   524 000001EB 721E                    	jb   decompress_instr
+   525 000001ED FEC6                    	inc  dh
+   526 000001EF 88C2                    	mov  dl, al
+   527 000001F1 2C03                    	sub  al, SHORT_SET+3
+   528 000001F3 7216                    	jb   decompress_instr
+   529 000001F5 FEC6                    	inc  dh
+   530 000001F7 88C2                    	mov  dl, al
+   531 000001F9 2C0D                    	sub  al, SHORT_GET+3
+   532 000001FB 720E                    	jb   decompress_instr
+   533 000001FD FEC6                    	inc  dh
+   534 000001FF 88C2                    	mov  dl, al
+   535 00000201 2C0E                    	sub  al, SHORT_CONST+3
+   536 00000203 7206                    	jb   decompress_instr
+   537 00000205 FEC6                    	inc  dh
+   538 00000207 88C2                    	mov  dl, al
+   539 00000209 2C07                    	sub  al, SHORT_CONST_PROC+3
+   540                                  
+   541                                  decompress_instr:
+   542 0000020B 0403                    	add  al, 3
+   543 0000020D 790B                    	jns  decompress_long 
+   544                                  
+   545                                  decompress_short:
+   546                                  	movC eax, 0	 	; eax <- dl
+   146                              <1> %if %2 == 0
+   147 0000020F 31C0                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   547 00000211 88D0                    	mov  al, dl
+   548 00000213 80FE02                  	cmp  dh, 2
+   549 00000216 730B                    	jae  decompress_short_int
+   550 00000218 EB15                    	jmp  decompress_short_symbol
+   551                                  
+   552                                  decompress_long:
+   553 0000021A 750C                    	jne   decompress_long_symbol
+   554                                  
+   555                                  decompress_long_int:
+   556                                  	movC eax, 0	 	; start accumulating at 0
+   146                              <1> %if %2 == 0
+   147 0000021C 31C0                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+   557 0000021E E8D1FEFFFF              	call get_int
+   558                                  
+   559                                  decompress_short_int:
+   560                                  decompress_int:
+   561 00000223 D1E0                    	shl  eax, 1		; convert to fixnum
+   562                                  %if FIX_TAG != 0
+   563 00000225 40                      	inc  eax
+   564                                  %endif
+   565 00000226 EB16                    	jmp  decompress_opnd_done
+   566                                  
+   567                                  decompress_long_symbol:
+   568 00000228 FEC8                    	dec  al			; start accumulating at 0 or 1
+   569 0000022A E8C5FEFFFF              	call get_int
+   570                                  
+   571                                  decompress_short_symbol:
+   572                                  decompress_symbol:
+   573 0000022F 89C3                    	mov  ebx, eax
+   574 00000231 8B4534                  	mov  eax, SYMBOL_TABLE
+   575 00000234 EB03                    	jmp  decompress_symbol_loop_start
+   576                                  decompress_symbol_loop:
+   577 00000236 8B4004                  	mov  eax, FIELD1(eax)	; advance in the list of symbols
+   578                                  decompress_symbol_loop_start:
+   579 00000239 4B                      	dec  ebx
+   580 0000023A 79FA                    	jns  decompress_symbol_loop
+   581                                  decompress_symbol_done:
+   582 0000023C 8B00                    	mov  eax, FIELD0(eax)	; extract symbol
+   583                                  
+   584                                  decompress_opnd_done:
+   585 0000023E 80FE04                  	cmp  dh, INSTR_CONST_PROC+1
+   586 00000241 0F8570FFFFFF            	jne  decompress_create_instr
+   587                                  
+   588                                  decompress_create_proc:
+   589 00000247 8901                    	mov  FIELD0(stack), eax
+   590 00000249 89C8                    	mov  eax, stack
+   591 0000024B 6A03                    	push FIX(PROCEDURE_TYPE)
+   592 0000024D E8B9FEFFFF              	call alloc_rib		; stack_register <- [stack_register, stack_register, PROCEDURE_TYPE]
+   593 00000252 89C8                    	mov  eax, stack
+   594 00000254 8B4904                  	mov  stack, FIELD1(stack)
+   595 00000257 896804                  	mov  FIELD1(eax), FALSE
+   596 0000025A 89CB                    	mov  ebx, stack
+   597 0000025C 8B4904                  	mov  stack, FIELD1(stack)
+   598 0000025F 896B04                  	mov  FIELD1(ebx), FALSE
+   599 00000262 39E9                    	cmp  stack, FALSE
+   600 00000264 0F854BFFFFFF            	jne  decompress_create_instr_const_proc
+   601                                  
+   602                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   603                                  
+   604                                  init_stack_and_pc:
+   605                                  
+   606                                  ;;; Initializes stack and pc registers
+   607                                  
+   608 0000026A 89C1                    	mov  stack, eax
+   609 0000026C 8929                    	mov  FIELD0(stack), FALSE
+   610 0000026E 895908                  	mov  FIELD2(stack), ebx
+   611                                  
+   612 00000271 6A0B                    	push FIX(INSTR_HALT)
+   613 00000273 8F03                    	pop  dword FIELD0(ebx)
+   614 00000275 8B7308                  	mov  pc, FIELD2(ebx)
+   615 00000278 896B08                  	mov  FIELD2(ebx), FALSE
+   616                                  
+   617                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   618                                  
+   619                                  run:
+   620                                  
+   621                                  ;;; Run the decompressed RVM code
+   622                                  
+   623 0000027B E9C8000000              	jmp  run_loop
+   624                                  
+   625                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   626                                  
+   627                                  %define NBARGS(n) mov bl, n
+   628                                  
+   629                                  %macro POP_STACK 0
+   630                                  	mov  stack, FIELD1(stack)
+   631                                  %endmacro
+   632                                  
+   633                                  %macro POP_STACK_TO 1
+   634                                  	mov  %1, FIELD0(stack)
+   635                                  	POP_STACK
+   636                                  %endmacro
+   637                                  
+   638                                  %define RESULT   eax
+   639                                  %define LAST_ARG RESULT
+   640                                  %define PREV_ARG edx
+   641                                  
+   642                                  %define TOP_OF_STACK FIELD0(stack)
+   643                                  
+   644                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   645                                  
+   646                                  %ifdef DEBUG_INSTR
+   647                                  string_jump	db "jump --",0x0a,0
+   648                                  string_call	db "call --",0x0a,0
+   649                                  %endif
+   650                                  
+   651                                  run_instr_jump_call:
+   652                                  
+   653                                  %ifdef DEBUG_INSTR
+   654                                  	cmp  dword FIELD2(pc), FIX(PAIR_TYPE)	; jump? (tail call)
+   655                                  	je   print_jump
+   656                                  print_call:
+   657                                  	push string_call
+   658                                  	call print_string
+   659                                  	jmp  print_jump_call_done
+   660                                  print_jump:
+   661                                  	push string_jump
+   662                                  	call print_string
+   663                                  print_jump_call_done:
+   664                                  %endif
+   665                                  
+   666 00000280 8B02                    	mov  eax, FIELD0(edx)	; eax = procedure to call
+   667 00000282 8B10                    	mov  edx, FIELD0(eax)	; edx = field0 of procedure (int or rib)
+   668 00000284 D1EA                    	shr  edx, 1
+   669                                  %if FIX_TAG == 0
+   670                                  	jnc  is_primitive
+   671                                  %else
+   672 00000286 7272                    	jc   is_primitive
+   673                                  %endif
+   674                                  
+   675                                  is_closure:
+   676 00000288 50                      	push eax
+   677 00000289 E87DFEFFFF              	call alloc_rib		; stack_register <- [closure, stack_register, closure]
+   678 0000028E 89C8                    	mov  eax, stack
+   679                                  	POP_STACK
+   630 00000290 8B4904              <1>  mov stack, FIELD1(stack)
+   680 00000293 894520                  	mov  TEMP2, eax		; remember the continuation rib
+   681 00000296 8B10                    	mov  edx, FIELD0(eax)
+   682 00000298 8B10                    	mov  edx, FIELD0(eax)
+   683 0000029A 895004                  	mov  FIELD1(eax), edx
+   684 0000029D 8B12                    	mov  edx, FIELD0(edx)
+   685 0000029F 8B12                    	mov  edx, FIELD0(edx)	; get nparams
+   686 000002A1 D1EA                    	shr  edx, 1
+   687 000002A3 EB1A                    	jmp  create_frame_loop_start
+   688                                  create_frame_loop:
+   689 000002A5 894524                  	mov  TEMP3, eax		; remember the frame's head
+   690                                  	POP_STACK_TO(eax)
+   634 000002A8 8B01                <1>  mov %1, FIELD0(stack)
+   635                              <1>  POP_STACK
+   630 000002AA 8B4904              <2>  mov stack, FIELD1(stack)
+   691 000002AD 6A01                    	push FIX(PAIR_TYPE)
+   692 000002AF E857FEFFFF              	call alloc_rib		; stack_register <- [arg, stack_register, PAIR_TYPE]
+   693 000002B4 89C8                    	mov  eax, stack
+   694                                  	POP_STACK
+   630 000002B6 8B4904              <1>  mov stack, FIELD1(stack)
+   695 000002B9 8B5D24                  	mov  ebx, TEMP3
+   696 000002BC 895804                  	mov  FIELD1(eax), ebx
+   697                                  create_frame_loop_start:
+   698 000002BF 4A                      	dec  edx
+   699 000002C0 79E3                    	jns  create_frame_loop
+   700                                  
+   701 000002C2 8B5520                  	mov  edx, TEMP2	      ; get continuation rib
+   702 000002C5 837E0801                	cmp  dword FIELD2(pc), FIX(PAIR_TYPE)	; jump? (tail call)
+   703 000002C9 740D                    	je   jump_closure
+   704                                  
+   705                                  call_closure:
+   706 000002CB 890A                    	mov  FIELD0(edx), stack
+   707 000002CD 8B7608                  	mov  pc, FIELD2(pc)
+   708 000002D0 897208                  	mov  FIELD2(edx), pc
+   709 000002D3 EB13                    	jmp  activate_closure
+   710                                  
+   711                                  jump_closure_pop_frame_loop:
+   712                                  	POP_STACK
+   630 000002D5 8B4904              <1>  mov stack, FIELD1(stack)
+   713                                  jump_closure:
+   714 000002D8 83790801                	cmp  dword FIELD2(stack), FIX(PAIR_TYPE)
+   715 000002DC 74F7                    	je   jump_closure_pop_frame_loop
+   716                                  
+   717 000002DE 8B19                    	mov  ebx, FIELD0(stack)
+   718 000002E0 891A                    	mov  FIELD0(edx), ebx
+   719 000002E2 8B5908                  	mov  ebx, FIELD2(stack)
+   720 000002E5 895A08                  	mov  FIELD2(edx), ebx
+   721                                  
+   722                                  activate_closure:
+   723 000002E8 89C1                    	mov  stack, eax		; set stack to frame of callee
+   724 000002EA 8B7520                  	mov  pc, TEMP2
+   725 000002ED 8B7604                  	mov  pc, FIELD1(pc)
+   726 000002F0 8B36                    	mov  pc, FIELD0(pc)
+   727 000002F2 896D20                  	mov  TEMP2, FALSE
+   728 000002F5 896D24                  	mov  TEMP3, FALSE
+   729                                  
+   730 000002F8 EB4B                    	jmp  run_next
+   731                                  
+   732                                  is_primitive:
+   733                                  %ifdef DEBUG_PRIM
+   734                                  	push stack
+   735                                  	call print_list
+   736                                  %endif
+   737 000002FA 68[10030000]            	push dword prim_ret ; primitive will return to prim_ret
+   738 000002FF FF3495[96030000]        	push dword [prim_dispatch_table+edx*4]
+   739 00000306 8B01                    	mov  LAST_ARG, FIELD0(stack)	; get last arg
+   740 00000308 8B5904                  	mov  ebx, FIELD1(stack)
+   741 0000030B 8B13                    	mov  PREV_ARG, FIELD0(ebx)	; get arg before last
+   742 0000030D B302                    	NBARGS(2)			; expect 2 arguments
+   743 0000030F C3                      	ret 				; jump to primitive
+   744                                  
+   745                                  prim_ret:
+   746 00000310 837E0801                	cmp  dword FIELD2(pc), FIX(PAIR_TYPE)	; jump? (tail call)
+   747 00000314 741A                    	je   jump_prim
+   748                                  
+   749                                  call_prim:
+   750 00000316 FECB                    	dec  bl
+   751 00000318 7824                    	js   push_result
+   752                                  	POP_STACK
+   630 0000031A 8B4904              <1>  mov stack, FIELD1(stack)
+   753 0000031D FECB                    	dec  bl
+   754 0000031F 781D                    	js   push_result
+   755                                  	POP_STACK
+   630 00000321 8B4904              <1>  mov stack, FIELD1(stack)
+   756 00000324 FECB                    	dec  bl
+   757 00000326 7816                    	js   push_result
+   758                                  	POP_STACK
+   630 00000328 8B4904              <1>  mov stack, FIELD1(stack)
+   759 0000032B EB11                    	jmp  push_result
+   760                                  
+   761                                  jump_prim_pop_frame_loop:
+   762                                  	POP_STACK
+   630 0000032D 8B4904              <1>  mov stack, FIELD1(stack)
+   763                                  jump_prim:
+   764 00000330 83790801                	cmp  dword FIELD2(stack), FIX(PAIR_TYPE)
+   765 00000334 74F7                    	je   jump_prim_pop_frame_loop
+   766                                  
+   767 00000336 89CE                    	mov  pc, stack			; caller's next instruction
+   768 00000338 8B09                    	mov  stack, FIELD0(stack)	; set stack to caller's frame
+   769                                  
+   770 0000033A EB02                    	jmp  push_result
+   771                                  
+   772                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   773                                  
+   774                                  %ifdef DEBUG_INSTR
+   775                                  string_get:	db "get --",0x0a,0
+   776                                  %endif
+   777                                  
+   778                                  run_instr_get:
+   779                                  
+   780                                  %ifdef DEBUG_INSTR
+   781                                  	push string_get
+   782                                  	call print_string
+   783                                  %endif
+   784                                  
+   785 0000033C 8B02                    	mov  eax, FIELD0(edx)
+   786                                  
+   787                                  push_result:
+   788 0000033E 6A01                    	push FIX(PAIR_TYPE)
+   789 00000340 E8C6FDFFFF              	call alloc_rib
+   790                                  
+   791                                  run_next:
+   792 00000345 8B7608                  	mov  pc, FIELD2(pc)
+   793                                  
+   794                                  	;; fallthrough
+   795                                  
+   796                                  run_loop:
+   797 00000348 8B06                    	mov  eax, FIELD0(pc)
+   798 0000034A D1E8                    	shr  eax, 1
+   799                                  
+   800                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   801                                  
+   802 0000034C 3C03                    	cmp  al, INSTR_CONST
+   803 0000034E 732E                    	jae  run_instr_no_mem_operand
+   804                                  
+   805                                  ;;; The instruction has a memory operand (i.e. a rib).
+   806                                  ;;; The rib will be either a symbol or a stack cell.
+   807                                  
+   808 00000350 8B5604                  	mov  edx, FIELD1(pc)
+   809 00000353 F6C201                  	test dl, 1
+   810                                  %if RIB_TAG == 0
+   811 00000356 740E                    	je   got_opnd
+   812                                  %else
+   813                                  	jne  got_opnd
+   814                                  %endif
+   815                                  
+   816                                  	;; loop to find the cell on the stack
+   817 00000358 89D3                    	mov  ebx, edx
+   818 0000035A D1EB                    	shr  ebx, 1
+   819 0000035C 89CA                    	mov  edx, stack
+   820 0000035E EB03                    	jmp  stack_opnd_loop_start
+   821                                  stack_opnd_loop:
+   822 00000360 8B5204                  	mov  edx, FIELD1(edx)
+   823                                  stack_opnd_loop_start:
+   824 00000363 4B                      	dec  ebx
+   825 00000364 79FA                    	jns  stack_opnd_loop
+   826                                  
+   827                                  got_opnd:
+   828                                  	;;  operand is in edx
+   829 00000366 3C01                    	cmp  al, INSTR_SET
+   830 00000368 77D2                    	ja   run_instr_get
+   831 0000036A 0F8510FFFFFF            	jne  run_instr_jump_call
+   832                                  
+   833                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   834                                  
+   835                                  run_instr_set:
+   836                                  
+   837                                  %ifdef DEBUG_INSTR
+   838                                  	push string_set
+   839                                  	call print_string
+   840                                  %endif
+   841                                  
+   842                                  	POP_STACK_TO(eax)
+   634 00000370 8B01                <1>  mov %1, FIELD0(stack)
+   635                              <1>  POP_STACK
+   630 00000372 8B4904              <2>  mov stack, FIELD1(stack)
+   843 00000375 8902                    	mov  FIELD0(edx), eax
+   844                                  
+   845 00000377 EBCC                    	jmp  run_next
+   846                                  
+   847                                  %ifdef DEBUG_INSTR
+   848                                  string_set:	db "set --",0x0a,0
+   849                                  %endif
+   850                                  
+   851                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   852                                  
+   853                                  run_instr_const:
+   854                                  
+   855                                  %ifdef DEBUG_INSTR
+   856                                  	push string_const
+   857                                  	call print_string
+   858                                  %endif
+   859                                  
+   860 00000379 8B4604                  	mov  eax, FIELD1(pc)
+   861 0000037C EBC0                    	jmp  push_result
+   862                                  
+   863                                  %ifdef DEBUG_INSTR
+   864                                  string_const	db "const --",0x0a,0
+   865                                  %endif
+   866                                  
+   867                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   868                                  
+   869                                  %ifdef DEBUG_INSTR
+   870                                  string_if:	db "if --",0x0a,0
+   871                                  %endif
+   872                                  
+   873                                  run_instr_no_mem_operand:
+   874 0000037E 74F9                    	je   run_instr_const
+   875 00000380 3C04                    	cmp  al, INSTR_IF
+   876 00000382 0F8523010000            	jne  run_instr_halt
+   877                                  
+   878                                  run_instr_if:
+   879                                  
+   880                                  %ifdef DEBUG_INSTR
+   881                                  	push string_if
+   882                                  	call print_string
+   883                                  %endif
+   884                                  
+   885 00000388 8B01                    	mov  eax, FIELD0(stack)
+   886 0000038A 8B4904                  	mov  stack, FIELD1(stack)
+   887 0000038D 39E8                    	cmp  eax, FALSE
+   888 0000038F 74B4                    	je   run_next
+   889                                  
+   890 00000391 8B7604                  	mov  pc, FIELD1(pc)
+   891 00000394 EBB2                    	jmp  run_loop
+   892                                  
+   893                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   894                                  
+   895                                  prim_dispatch_table:
+   896                                  ;; @@(primitives (gen body)
+   897 00000396 [EA030000]              	dd   prim_rib         ;; @@(primitive (rib a b c))@@
+   898 0000039A [09040000]              	dd   prim_id          ;; @@(primitive (id x))@@
+   899 0000039E [0C040000]              	dd   prim_arg1        ;; @@(primitive (arg1 x y))@@
+   900 000003A2 [0B040000]              	dd   prim_arg2        ;; @@(primitive (arg2 x y))@@
+   901 000003A6 [15040000]              	dd   prim_close       ;; @@(primitive (close rib))@@
+   902 000003AA [48040000]              	dd   prim_isrib       ;; @@(primitive (rib? rib))@@
+   903 000003AE [2C040000]              	dd   prim_field0      ;; @@(primitive (field0 rib))@@
+   904 000003B2 [31040000]              	dd   prim_field1      ;; @@(primitive (field1 rib))@@
+   905 000003B6 [37040000]              	dd   prim_field2      ;; @@(primitive (field2 rib))@@
+   906 000003BA [3D040000]              	dd   prim_field0set   ;; @@(primitive (field0-set! rib))@@
+   907 000003BE [40040000]              	dd   prim_field1set   ;; @@(primitive (field1-set! rib))@@
+   908 000003C2 [44040000]              	dd   prim_field2set   ;; @@(primitive (field2-set! rib))@@
+   909 000003C6 [4E040000]              	dd   prim_eqv         ;; @@(primitive (eqv? x y))@@
+   910 000003CA [54040000]              	dd   prim_lt          ;; @@(primitive (< x y))@@
+   911 000003CE [5E040000]              	dd   prim_add         ;; @@(primitive (+ x y))@@
+   912 000003D2 [62040000]              	dd   prim_sub         ;; @@(primitive (- x y))@@
+   913 000003D6 [67040000]              	dd   prim_mul         ;; @@(primitive (* x y))@@
+   914 000003DA [6E040000]              	dd   prim_quotient    ;; @@(primitive (quotient x y))@@
+   915 000003DE [7B040000]              	dd   prim_getchar     ;; @@(primitive (getchar))@@
+   916 000003E2 [94040000]              	dd   prim_putchar     ;; @@(primitive (putchar c))@@
+   917 000003E6 [AD040000]              	dd   prim_exit        ;; @@(primitive (exit n))@@  
+   918                                  ;; )@@
+   919                                  
+   920                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   921                                  
+   922                                  %ifdef DEBUG_PRIM
+   923                                  string_rib	db "rib",0x0a,0
+   924                                  %endif
+   925                                  
+   926                                  ;; @@(feature rib
+   927                                  prim_rib:
+   928                                  
+   929                                  %ifdef DEBUG_PRIM
+   930                                  	push string_rib
+   931                                  	call print_string
+   932                                  %endif
+   933                                  
+   934 000003EA 50                      	push LAST_ARG
+   935 000003EB 89D0                    	mov  eax, PREV_ARG
+   936 000003ED E819FDFFFF              	call alloc_rib
+   937 000003F2 89C8                    	mov  LAST_ARG, stack	; RESULT = LAST_ARG
+   938 000003F4 8B4804                  	mov  stack, FIELD1(LAST_ARG)
+   939 000003F7 8B5904                  	mov  ebx, FIELD1(stack)
+   940 000003FA 8B5B04                  	mov  ebx, FIELD1(ebx)
+   941 000003FD 8B10                    	mov  PREV_ARG, FIELD0(LAST_ARG)
+   942 000003FF 895004                  	mov  FIELD1(LAST_ARG), PREV_ARG
+   943 00000402 8B13                    	mov  PREV_ARG, FIELD0(ebx)
+   944 00000404 8910                    	mov  FIELD0(LAST_ARG), PREV_ARG
+   945 00000406 B303                    	NBARGS(3)
+   946 00000408 C3                      	ret
+   947                                  ;; )@@
+   948                                  
+   949                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   950                                  
+   951                                  %ifdef DEBUG_PRIM
+   952                                  string_id	db "id",0x0a,0
+   953                                  %endif
+   954                                  
+   955                                  ;; @@(feature id
+   956                                  prim_id:
+   957                                  
+   958                                  %ifdef DEBUG_PRIM
+   959                                  	push string_id
+   960                                  	call print_string
+   961                                  %endif
+   962                                  
+   963 00000409 B301                    	NBARGS(1)
+   964                                  
+   965                                  %ifndef DEBUG_PRIM
+   966                                  prim_arg2:
+   967                                  %endif
+   968                                  
+   969 0000040B C3                      	ret
+   970                                  ;; )@@
+   971                                  
+   972                                  ;; @@(feature (and arg2 (not id))
+   973                                  %ifdef RVM_GEN
+   974                                  prim_arg2:
+   975                                      ret
+   976                                  %endif
+   977                                  ;; )@@
+   978                                  
+   979                                  
+   980                                  
+   981                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+   982                                  
+   983                                  %ifdef DEBUG_PRIM
+   984                                  string_arg1	db "arg1",0x0a,0
+   985                                  %endif
+   986                                  
+   987                                  ;; @@(feature arg1
+   988                                  prim_arg1:
+   989                                  
+   990                                  %ifdef DEBUG_PRIM
+   991                                  	push string_arg1
+   992                                  	call print_string
+   993                                  %endif
+   994                                  
+   995                                  	;; TODO: remove arg1 prim and use "set" instead
+   996 0000040C 58                      	pop  eax		; discard normal return address
+   997                                  	POP_STACK
+   630 0000040D 8B4904              <1>  mov stack, FIELD1(stack)
+   998 00000410 E930FFFFFF              	jmp  run_next
+   999                                  ;; )@@
+  1000                                  
+  1001                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1002                                  
+  1003                                  %ifdef DEBUG_PRIM
+  1004                                  
+  1005                                  string_arg2	db "arg2",0x0a,0
+  1006                                  
+  1007                                  prim_arg2:
+  1008                                  
+  1009                                  	push string_arg2
+  1010                                  	call print_string
+  1011                                  
+  1012                                  	ret
+  1013                                  
+  1014                                  %endif
+  1015                                  
+  1016                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1017                                  
+  1018                                  %ifdef DEBUG_PRIM
+  1019                                  string_close	db "close",0x0a,0
+  1020                                  %endif
+  1021                                  
+  1022                                  ;; @@(feature close
+  1023                                  prim_close:
+  1024                                  
+  1025                                  %ifdef DEBUG_PRIM
+  1026                                  	push string_close
+  1027                                  	call print_string
+  1028                                  %endif
+  1029                                  
+  1030 00000415 8B00                    	mov  eax, FIELD0(LAST_ARG)
+  1031 00000417 6A03                    	push FIX(PROCEDURE_TYPE)
+  1032 00000419 E8EDFCFFFF              	call alloc_rib
+  1033 0000041E 89C8                    	mov  LAST_ARG, stack	; RESULT = LAST_ARG
+  1034                                  	POP_STACK
+   630 00000420 8B4904              <1>  mov stack, FIELD1(stack)
+  1035 00000423 8B5904                  	mov  ebx, FIELD1(stack)
+  1036 00000426 895804                  	mov  FIELD1(LAST_ARG), ebx
+  1037 00000429 B301                    	NBARGS(1)
+  1038 0000042B C3                      	ret
+  1039                                  ;; )@@
+  1040                                  
+  1041                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1042                                  
+  1043                                  %ifdef DEBUG_PRIM
+  1044                                  string_field0	db "field0",0x0a,0
+  1045                                  %endif
+  1046                                  
+  1047                                  ;; @@(feature field0
+  1048                                  prim_field0:
+  1049                                  
+  1050                                  %ifdef DEBUG_PRIM
+  1051                                  	push string_field0
+  1052                                  	call print_string
+  1053                                  %endif
+  1054                                  
+  1055 0000042C 8B00                    	mov  LAST_ARG, FIELD0(LAST_ARG)	; RESULT = LAST_ARG
+  1056 0000042E B301                    	NBARGS(1)
+  1057 00000430 C3                      	ret
+  1058                                  ;; )@@
+  1059                                  
+  1060                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1061                                  
+  1062                                  %ifdef DEBUG_PRIM
+  1063                                  string_field1	db "field1",0x0a,0
+  1064                                  %endif
+  1065                                  
+  1066                                  ;; @@(feature field1
+  1067                                  prim_field1:
+  1068                                  
+  1069                                  %ifdef DEBUG_PRIM
+  1070                                  	push string_field1
+  1071                                  	call print_string
+  1072                                  %endif
+  1073                                  
+  1074 00000431 8B4004                  	mov  LAST_ARG, FIELD1(LAST_ARG)	; RESULT = LAST_ARG
+  1075 00000434 B301                    	NBARGS(1)
+  1076 00000436 C3                      	ret
+  1077                                  ;; )@@
+  1078                                  
+  1079                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1080                                  
+  1081                                  %ifdef DEBUG_PRIM
+  1082                                  string_field2	db "field2",0x0a,0
+  1083                                  %endif
+  1084                                  
+  1085                                  ;; @@(feature field2
+  1086                                  prim_field2:
+  1087                                  
+  1088                                  %ifdef DEBUG_PRIM
+  1089                                  	push string_field2
+  1090                                  	call print_string
+  1091                                  %endif
+  1092                                  
+  1093 00000437 8B4008                  	mov  LAST_ARG, FIELD2(LAST_ARG)	; RESULT = LAST_ARG
+  1094 0000043A B301                    	NBARGS(1)
+  1095 0000043C C3                      	ret
+  1096                                  ;; )@@
+  1097                                  
+  1098                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1099                                  
+  1100                                  %ifdef DEBUG_PRIM
+  1101                                  string_field0set	db "field0-set!",0x0a,0
+  1102                                  %endif
+  1103                                  
+  1104                                  ;; @@(feature field0-set!
+  1105                                  prim_field0set:
+  1106                                  
+  1107                                  %ifdef DEBUG_PRIM
+  1108                                  	push string_field0set
+  1109                                  	call print_string
+  1110                                  %endif
+  1111                                  
+  1112 0000043D 8902                    	mov  FIELD0(PREV_ARG), LAST_ARG	; RESULT = LAST_ARG
+  1113                                  ;	NBARGS(2)
+  1114 0000043F C3                      	ret
+  1115                                  ;; )@@
+  1116                                  
+  1117                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1118                                  
+  1119                                  %ifdef DEBUG_PRIM
+  1120                                  string_field1set	db "field1-set!",0x0a,0
+  1121                                  %endif
+  1122                                  
+  1123                                  ;; @@(feature field1-set!
+  1124                                  prim_field1set:
+  1125                                  
+  1126                                  %ifdef DEBUG_PRIM
+  1127                                  	push string_field1set
+  1128                                  	call print_string
+  1129                                  %endif
+  1130                                  
+  1131 00000440 894204                  	mov  FIELD1(PREV_ARG), LAST_ARG	; RESULT = LAST_ARG
+  1132                                  ;	NBARGS(2)
+  1133 00000443 C3                      	ret
+  1134                                  ;; )@@
+  1135                                  
+  1136                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1137                                  
+  1138                                  %ifdef DEBUG_PRIM
+  1139                                  string_field2set	db "field2-set!",0x0a,0
+  1140                                  %endif
+  1141                                  
+  1142                                  ;; @@(feature field2-set!
+  1143                                  prim_field2set:
+  1144                                  
+  1145                                  %ifdef DEBUG_PRIM
+  1146                                  	push string_field2set
+  1147                                  	call print_string
+  1148                                  %endif
+  1149                                  
+  1150 00000444 894208                  	mov  FIELD2(PREV_ARG), LAST_ARG	; RESULT = LAST_ARG
+  1151                                  ;	NBARGS(2)
+  1152 00000447 C3                      	ret
+  1153                                  ;; )@@
+  1154                                  
+  1155                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1156                                  
+  1157                                  %ifdef DEBUG_PRIM
+  1158                                  string_isrib	db "rib?",0x0a,0
+  1159                                  %endif
+  1160                                  
+  1161                                  ;; @@(feature rib? (use eqv?_feature)
+  1162                                  prim_isrib:
+  1163                                  
+  1164                                  %ifdef DEBUG_PRIM
+  1165                                  	push string_isrib
+  1166                                  	call print_string
+  1167                                  %endif
+  1168                                  
+  1169 00000448 89C2                    	mov  PREV_ARG, LAST_ARG
+  1170                                  %if RIB_TAG == 0
+  1171 0000044A 24FE                    	and  al, 0xfe	; set lowest bit of LAST_ARG to 0
+  1172                                  %else
+  1173                                  	or   al, 1	; set lowest bit of LAST_ARG to 1
+  1174                                  %endif
+  1175                                  
+  1176 0000044C B301                    	NBARGS(1)
+  1177                                  
+  1178                                  %ifdef DEBUG_PRIM
+  1179                                  	jmp  prim_eqv_internal
+  1180                                  %else
+  1181                                  	;; fallthrough (will test if the two bit patterns are the same)
+  1182                                  %endif
+  1183                                  ;; )@@
+  1184                                  
+  1185                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1186                                  
+  1187                                  %ifdef DEBUG_PRIM
+  1188                                  string_eqv	db "eqv?",0x0a,0
+  1189                                  %endif
+  1190                                  
+  1191                                  ;; @@(feature (or eqv? eqv?_feature) (use <_feature)
+  1192                                  prim_eqv:
+  1193                                  
+  1194                                  %ifdef DEBUG_PRIM
+  1195                                  	push string_eqv
+  1196                                  	call print_string
+  1197                                  %endif
+  1198                                  
+  1199                                  prim_eqv_internal:
+  1200 0000044E 39C2                    	cmp  PREV_ARG, LAST_ARG
+  1201 00000450 7408                    	je   return_true
+  1202                                  
+  1203                                  ;	NBARGS(2)
+  1204                                  
+  1205 00000452 89D0                    	mov  LAST_ARG, PREV_ARG
+  1206                                  
+  1207                                  %ifdef DEBUG_PRIM
+  1208                                  	jmp  prim_lt_internal
+  1209                                  %else
+  1210                                  	;; fallthrough (will return #f)
+  1211                                  %endif
+  1212                                  ;; )@@
+  1213                                  
+  1214                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1215                                  
+  1216                                  %ifdef DEBUG_PRIM
+  1217                                  string_lt	db "<",0x0a,0
+  1218                                  %endif
+  1219                                  
+  1220                                  ;; @@(feature (or < <_feature)
+  1221                                  prim_lt:
+  1222                                  
+  1223                                  %ifdef DEBUG_PRIM
+  1224                                  	push string_lt
+  1225                                  	call print_string
+  1226                                  %endif
+  1227                                  
+  1228                                  prim_lt_internal:
+  1229 00000454 39C2                    	cmp  PREV_ARG, LAST_ARG
+  1230 00000456 89E8                    	mov  LAST_ARG, FALSE
+  1231 00000458 7D03                    	jge  return_boolean
+  1232                                  return_true:
+  1233 0000045A 8D4510                  	lea  LAST_ARG, [TRUE]
+  1234                                  return_boolean:
+  1235                                  ;	NBARGS(2)
+  1236 0000045D C3                      	ret
+  1237                                  ;; )@@
+  1238                                  
+  1239                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1240                                  
+  1241                                  %ifdef DEBUG_PRIM
+  1242                                  string_add	db "+",0x0a,0
+  1243                                  %endif
+  1244                                  
+  1245                                  ;; @@(feature +
+  1246                                  prim_add:
+  1247                                  
+  1248                                  %ifdef DEBUG_PRIM
+  1249                                  	push string_add
+  1250                                  	call print_string
+  1251                                  %endif
+  1252                                  
+  1253                                  %if FIX_TAG != 0
+  1254 0000045E 48                      	dec  LAST_ARG
+  1255                                  %endif
+  1256 0000045F 01D0                    	add  LAST_ARG, PREV_ARG	; RESULT = LAST_ARG
+  1257                                  ;	NBARGS(2)
+  1258 00000461 C3                      	ret
+  1259                                  ;; )@@
+  1260                                  
+  1261                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1262                                  
+  1263                                  %ifdef DEBUG_PRIM
+  1264                                  string_sub	db "-",0x0a,0
+  1265                                  %endif
+  1266                                  
+  1267                                  ;; @@(feature -
+  1268                                  prim_sub:
+  1269                                  
+  1270                                  %ifdef DEBUG_PRIM
+  1271                                  	push string_sub
+  1272                                  	call print_string
+  1273                                  %endif
+  1274                                  
+  1275                                  %if FIX_TAG != 0
+  1276 00000462 48                      	dec  LAST_ARG
+  1277                                  %endif
+  1278 00000463 92                      	xchg LAST_ARG, PREV_ARG
+  1279 00000464 29D0                    	sub  LAST_ARG, PREV_ARG	; RESULT = LAST_ARG
+  1280                                  ;	NBARGS(2)
+  1281 00000466 C3                      	ret
+  1282                                  ;; )@@
+  1283                                  
+  1284                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1285                                  
+  1286                                  %ifdef DEBUG_PRIM
+  1287                                  string_mul	db "*",0x0a,0
+  1288                                  %endif
+  1289                                  
+  1290                                  ;; @@(feature *
+  1291                                  prim_mul:
+  1292                                  
+  1293                                  %ifdef DEBUG_PRIM
+  1294                                  	push string_mul
+  1295                                  	call print_string
+  1296                                  %endif
+  1297                                  
+  1298                                  %if FIX_TAG != 0
+  1299 00000467 4A                      	dec  PREV_ARG
+  1300                                  %endif
+  1301 00000468 D1E8                    	shr  LAST_ARG, 1
+  1302 0000046A F7EA                    	imul PREV_ARG
+  1303                                  %if FIX_TAG != 0
+  1304 0000046C 40                      	inc  LAST_ARG
+  1305                                  %endif
+  1306                                  ;	NBARGS(2)
+  1307 0000046D C3                      	ret
+  1308                                  ;; )@@
+  1309                                  
+  1310                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1311                                  
+  1312                                  %ifdef DEBUG_PRIM
+  1313                                  string_quotient	db "quotient",0x0a,0
+  1314                                  %endif
+  1315                                  
+  1316                                  ;; @@(feature quotient
+  1317                                  prim_quotient:
+  1318                                  
+  1319                                  %ifdef DEBUG_PRIM
+  1320                                  	push string_quotient
+  1321                                  	call print_string
+  1322                                  %endif
+  1323                                  
+  1324                                  %if FIX_TAG != 0
+  1325 0000046E 48                      	dec  LAST_ARG
+  1326 0000046F 4A                      	dec  PREV_ARG
+  1327                                  %endif
+  1328 00000470 50                      	push LAST_ARG
+  1329 00000471 92                      	xchg LAST_ARG, PREV_ARG
+  1330 00000472 99                      	cdq
+  1331 00000473 F73C24                  	idiv dword [esp]
+  1332 00000476 5A                      	pop  PREV_ARG
+  1333                                  ;	NBARGS(2)
+  1334                                  raw_int_to_scheme_int:
+  1335 00000477 D1E0                    	shl  LAST_ARG, 1
+  1336                                  %if FIX_TAG != 0
+  1337 00000479 40                      	inc  LAST_ARG
+  1338                                  %endif
+  1339 0000047A C3                      	ret
+  1340                                  ;; )@@
+  1341                                  
+  1342                                  ;; @@(feature (and raw_int_to_scheme_int (not quotient))
+  1343                                  %ifdef RVM_GEN
+  1344                                  raw_int_to_scheme_int:
+  1345                                  	shl  LAST_ARG, 1
+  1346                                  %if FIX_TAG != 0
+  1347                                  	inc  LAST_ARG
+  1348                                  %endif
+  1349                                  	ret
+  1350                                  %endif
+  1351                                  ;; )@@
+  1352                                  
+  1353                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1354                                  
+  1355                                  %ifdef DEBUG_PRIM
+  1356                                  string_getchar	db "getchar",0x0a,0
+  1357                                  %endif
+  1358                                  
+  1359                                  ;; @@(feature getchar (use raw_int_to_scheme_int)
+  1360                                  prim_getchar:
+  1361                                  
+  1362                                  %ifdef DEBUG_PRIM
+  1363                                  	push string_getchar
+  1364                                  	call print_string
+  1365                                  %endif
+  1366                                  
+  1367 0000047B 51                      	push ecx
+  1368                                  	movC ebx, 0		; ebx = 0 = STDIN
+   146                              <1> %if %2 == 0
+   147 0000047C 31DB                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+  1369 0000047E 53                      	push ebx		; buffer to read byte
+  1370                                  	movC edx, 1		; edx = 1 = number of bytes to read
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152 0000047F 31D2                <1>  xor %1, %1
+   153 00000481 42                  <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+  1371 00000482 89E1                    	mov  ecx, esp		; to the stack
+  1372                                  	movC eax, SYS_READ
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155 00000484 6A03                <1>  push %2
+   156 00000486 58                  <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+  1373 00000487 CD80                    	CALL_KERNEL
+  1374 00000489 85C0                    	test eax, eax
+  1375 0000048B 58                      	pop  LAST_ARG		; get buffer (0 if no byte read)
+  1376 0000048C 7501                    	jne  prim_getchar_done
+  1377 0000048E 48                      	dec  LAST_ARG		; -1 on EOF
+  1378                                  prim_getchar_done:
+  1379 0000048F 59                      	pop  ecx
+  1380 00000490 B300                    	NBARGS(0)
+  1381 00000492 EBE3                    	jmp  raw_int_to_scheme_int
+  1382                                  ;; )@@
+  1383                                  
+  1384                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1385                                  
+  1386                                  %ifdef DEBUG_PRIM
+  1387                                  string_putchar	db "putchar",0x0a,0
+  1388                                  %endif
+  1389                                  
+  1390                                  ;; @@(feature putchar
+  1391                                  prim_putchar:
+  1392                                  
+  1393                                  %ifdef DEBUG_PRIM
+  1394                                  	push string_putchar
+  1395                                  	call print_string
+  1396                                  %endif
+  1397                                  
+  1398 00000494 50                      	push LAST_ARG
+  1399 00000495 51                      	push ecx
+  1400 00000496 D1E8                    	shr  LAST_ARG, 1
+  1401 00000498 50                      	push LAST_ARG
+  1402                                  	movC ebx, STDOUT	; ebx = 1 = STDOUT
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152 00000499 31DB                <1>  xor %1, %1
+   153 0000049B 43                  <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+  1403 0000049C 89DA                    	mov  edx, ebx		; edx = 1 = number of bytes to write
+  1404 0000049E 89E1                    	mov  ecx, esp		; from the stack
+  1405                                  	movC eax, SYS_WRITE
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155 000004A0 6A04                <1>  push %2
+   156 000004A2 58                  <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+  1406 000004A3 CD80                    	CALL_KERNEL
+  1407 000004A5 58                      	pop  eax
+  1408 000004A6 59                      	pop  ecx
+  1409 000004A7 58                      	pop  LAST_ARG
+  1410 000004A8 B301                    	NBARGS(1)
+  1411 000004AA C3                      	ret
+  1412                                  ;; )@@
+  1413                                  
+  1414                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1415                                  
+  1416                                  %ifdef DEBUG_PRIM
+  1417                                  string_exit	db "exit",0x0a,0
+  1418                                  %endif
+  1419                                  
+  1420                                  %ifdef DEBUG_INSTR
+  1421                                  string_halt:	db "halt --",0x0a,0
+  1422                                  %endif
+  1423                                  
+  1424                                  run_instr_halt:
+  1425                                  
+  1426                                  %ifdef DEBUG_INSTR
+  1427                                  	push string_halt
+  1428                                  	call print_string
+  1429                                  %endif
+  1430                                  
+  1431                                  	movC LAST_ARG, 0
+   146                              <1> %if %2 == 0
+   147 000004AB 31C0                <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152                              <1>  xor %1, %1
+   153                              <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+  1432                                  	;; fallthrough
+  1433                                  
+  1434                                  ;; @@(feature exit
+  1435                                  prim_exit:
+  1436                                  
+  1437                                  %ifdef DEBUG_PRIM
+  1438                                  	push string_exit
+  1439                                  	call print_string
+  1440                                  %endif
+  1441                                  
+  1442 000004AD D1E8                    	shr  LAST_ARG, 1
+  1443 000004AF 93                      	xchg LAST_ARG, ebx
+  1444                                  	movC eax, SYS_EXIT
+   146                              <1> %if %2 == 0
+   147                              <1>  xor %1, %1
+   148                              <1> %elif %2 == -1
+   149                              <1>  xor %1, %1
+   150                              <1>  dec %1
+   151                              <1> %elif %2 == 1
+   152 000004B0 31C0                <1>  xor %1, %1
+   153 000004B2 40                  <1>  inc %1
+   154                              <1> %elif %2 >= -128 && %2 <= 127
+   155                              <1>  push %2
+   156                              <1>  pop %1
+   157                              <1> %else
+   158                              <1>  mov %1, %2
+   159                              <1> %endif
+  1445 000004B3 CD80                    	CALL_KERNEL
+  1446                                  ;	NBARGS(1)		; can be avoided because we are exiting!
+  1447                                  ;	ret
+  1448                                  ;; )@@
+  1449                                  
+  1450                                  ; @@(location prims)@@
+  1451                                  
+  1452                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1453                                  
+  1454                                  ;;; The compressed RVM code
+  1455                                  
+  1456                                  ;; @@(replace ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y" (encode 92)
+  1457 000004B5 293B27753F3E76443F-     rvm_code:	db ");'u?>vD?>vRD?>vRA?>vRA?>vR:?>vR=!(:lkm!':lkv6y",0 ; RVM code that prints HELLO!
+  1457 000004BE 3E7652443F3E765241-
+  1457 000004C7 3F3E7652413F3E7652-
+  1457 000004D0 3A3F3E76523D21283A-
+  1457 000004D9 6C6B6D21273A6C6B76-
+  1457 000004E2 367900             
+  1458                                  ;; )@@
+  1459                                  
+  1460                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  1461                                  
+  1462                                  ;;; Miscellaneous debugging routines
+  1463                                  
+  1464                                  %ifdef DEBUG
+  1465                                  
+  1466                                  print_tos:
+  1467                                  
+  1468                                  	push eax
+  1469                                  	movC eax, 32
+  1470                                  	call putchar
+  1471                                  	pop  eax
+  1472                                  	push stack
+  1473                                  	call print_word_hex
+  1474                                  	push eax
+  1475                                  	movC eax, 58
+  1476                                  	call putchar
+  1477                                  	movC eax, 32
+  1478                                  	call putchar
+  1479                                  	pop  eax
+  1480                                  	push dword FIELD0(stack)
+  1481                                  	call print_word_hex
+  1482                                  	push eax
+  1483                                  	movC eax, 32
+  1484                                  	call putchar
+  1485                                  	pop  eax
+  1486                                  	push dword FIELD1(stack)
+  1487                                  	call print_word_hex
+  1488                                  	push eax
+  1489                                  	movC eax, 32
+  1490                                  	call putchar
+  1491                                  	pop  eax
+  1492                                  	push dword FIELD2(stack)
+  1493                                  	call print_word_hex
+  1494                                  	push eax
+  1495                                  	movC eax, 0x0a
+  1496                                  	call putchar
+  1497                                  	pop  eax
+  1498                                  
+  1499                                  	ret
+  1500                                  %endif
+  1501                                  
+  1502                                  %ifdef DEBUG
+  1503                                  
+  1504                                  print_list:
+  1505                                  
+  1506                                  	push eax
+  1507                                  
+  1508                                  	push eax
+  1509                                  	movC eax, 0x0a
+  1510                                  	call putchar
+  1511                                  	pop  eax
+  1512                                  
+  1513                                  	mov  eax, [esp+8]
+  1514                                  
+  1515                                  print_list_loop:
+  1516                                  
+  1517                                  	push eax
+  1518                                  	movC eax, 32
+  1519                                  	call putchar
+  1520                                  	pop  eax
+  1521                                  
+  1522                                  	push eax
+  1523                                  	call print_word_hex
+  1524                                  
+  1525                                  	push eax
+  1526                                  	movC eax, 58
+  1527                                  	call putchar
+  1528                                  	movC eax, 32
+  1529                                  	call putchar
+  1530                                  	pop  eax
+  1531                                  
+  1532                                  	push dword FIELD0(eax)
+  1533                                  	call print_word_hex
+  1534                                  
+  1535                                  	push eax
+  1536                                  	movC eax, 32
+  1537                                  	call putchar
+  1538                                  	pop  eax
+  1539                                  
+  1540                                  	push dword FIELD1(eax)
+  1541                                  	call print_word_hex
+  1542                                  
+  1543                                  	push eax
+  1544                                  	movC eax, 32
+  1545                                  	call putchar
+  1546                                  	pop  eax
+  1547                                  
+  1548                                  	push dword FIELD2(eax)
+  1549                                  	call print_word_hex
+  1550                                  
+  1551                                  	push eax
+  1552                                  	movC eax, 0x0a
+  1553                                  	call putchar
+  1554                                  	pop  eax
+  1555                                  
+  1556                                  	cmp  dword FIELD1(eax), FALSE
+  1557                                  	mov  eax, FIELD1(eax)
+  1558                                  	jne   print_list_loop
+  1559                                  
+  1560                                  	pop  eax
+  1561                                  
+  1562                                  	ret  4
+  1563                                  
+  1564                                  %endif
+  1565                                  
+  1566                                  %ifdef DEBUG
+  1567                                  
+  1568                                  print_heap:
+  1569                                  
+  1570                                  	push eax
+  1571                                  	movC eax, 0x0a
+  1572                                  	call putchar
+  1573                                  	pop  eax
+  1574                                  
+  1575                                  	call print_regs
+  1576                                  
+  1577                                  	push eax
+  1578                                  	movC eax, 0x0a
+  1579                                  	call putchar
+  1580                                  	pop  eax
+  1581                                  
+  1582                                  	call print_eax
+  1583                                  
+  1584                                  	movC ecx, HEAP_SIZE_RIBS
+  1585                                  	mov  ebx, heap_base
+  1586                                  print_heap_loop:
+  1587                                  
+  1588                                  	push ebx
+  1589                                  	call print_word_hex
+  1590                                  	mov  al, 58
+  1591                                  	call putchar
+  1592                                  	mov  al, 32
+  1593                                  	call putchar
+  1594                                  	push dword FIELD0(ebx)
+  1595                                  	call print_word_hex
+  1596                                  	mov  al, 32
+  1597                                  	call putchar
+  1598                                  	push dword FIELD1(ebx)
+  1599                                  	call print_word_hex
+  1600                                  	mov  al, 32
+  1601                                  	call putchar
+  1602                                  	push dword FIELD2(ebx)
+  1603                                  	call print_word_hex
+  1604                                  	mov  al, 32
+  1605                                  	call putchar
+  1606                                  	push dword FIELD3(ebx)
+  1607                                  	call print_word_hex
+  1608                                  	mov  al, 0x0a
+  1609                                  	call putchar
+  1610                                  
+  1611                                  	add  ebx, WORD_SIZE * RIB_SIZE_WORDS
+  1612                                  	dec  ecx
+  1613                                  	jne  print_heap_loop
+  1614                                  
+  1615                                  	ret
+  1616                                  
+  1617                                  %endif
+  1618                                  
+  1619                                  %ifdef NEED_PRINT_REGS
+  1620                                  
+  1621                                  print_regs:
+  1622                                  	push eax
+  1623                                  	mov  al, 0x0a
+  1624                                  	call putchar
+  1625                                  	pop  eax
+  1626                                  	call print_eax
+  1627                                  	call print_ebx
+  1628                                  	call print_ecx
+  1629                                  	call print_edx
+  1630                                  	call print_esi
+  1631                                  	call print_edi
+  1632                                  	call print_ebp
+  1633                                  	jmp  print_esp
+  1634                                  
+  1635                                  %ifndef NEED_PRINT_EAX
+  1636                                  %define NEED_PRINT_EAX
+  1637                                  %endif
+  1638                                  
+  1639                                  %ifndef NEED_PRINT_EBX
+  1640                                  %define NEED_PRINT_EBX
+  1641                                  %endif
+  1642                                  
+  1643                                  %ifndef NEED_PRINT_ECX
+  1644                                  %define NEED_PRINT_ECX
+  1645                                  %endif
+  1646                                  
+  1647                                  %ifndef NEED_PRINT_EDX
+  1648                                  %define NEED_PRINT_EDX
+  1649                                  %endif
+  1650                                  
+  1651                                  %ifndef NEED_PRINT_ESI
+  1652                                  %define NEED_PRINT_ESI
+  1653                                  %endif
+  1654                                  
+  1655                                  %ifndef NEED_PRINT_EDI
+  1656                                  %define NEED_PRINT_EDI
+  1657                                  %endif
+  1658                                  
+  1659                                  %ifndef NEED_PRINT_EBP
+  1660                                  %define NEED_PRINT_EBP
+  1661                                  %endif
+  1662                                  
+  1663                                  %ifndef NEED_PRINT_ESP
+  1664                                  %define NEED_PRINT_ESP
+  1665                                  %endif
+  1666                                  
+  1667                                  %endif
+  1668                                  
+  1669                                  %ifdef NEED_PRINT_EAX
+  1670                                  
+  1671                                  print_eax:
+  1672                                  	push eax
+  1673                                          push string_eax
+  1674                                          call print_string
+  1675                                  	push eax
+  1676                                  	call print_word_hex
+  1677                                  	mov  al, 0x0a
+  1678                                  	call putchar
+  1679                                  	pop  eax
+  1680                                  	ret
+  1681                                  
+  1682                                  string_eax:	db "eax=",0
+  1683                                  
+  1684                                  %ifndef NEED_PRINT_WORD_HEX
+  1685                                  %define NEED_PRINT_WORD_HEX
+  1686                                  %endif
+  1687                                  
+  1688                                  %endif
+  1689                                  
+  1690                                  %ifdef NEED_PRINT_EBX
+  1691                                  
+  1692                                  print_ebx:
+  1693                                  	push eax
+  1694                                          push string_ebx
+  1695                                          call print_string
+  1696                                  	push ebx
+  1697                                  	call print_word_hex
+  1698                                  	mov  al, 0x0a
+  1699                                  	call putchar
+  1700                                  	pop  eax
+  1701                                  	ret
+  1702                                  
+  1703                                  string_ebx:	db "ebx=",0
+  1704                                  
+  1705                                  %ifndef NEED_PRINT_WORD_HEX
+  1706                                  %define NEED_PRINT_WORD_HEX
+  1707                                  %endif
+  1708                                  
+  1709                                  %endif
+  1710                                  
+  1711                                  %ifdef NEED_PRINT_ECX
+  1712                                  
+  1713                                  print_ecx:
+  1714                                  	push eax
+  1715                                          push string_ecx
+  1716                                          call print_string
+  1717                                  	push ecx
+  1718                                  	call print_word_hex
+  1719                                  	mov  al, 0x0a
+  1720                                  	call putchar
+  1721                                  	pop  eax
+  1722                                  	ret
+  1723                                  
+  1724                                  string_ecx:	db "ecx=",0
+  1725                                  
+  1726                                  %ifndef NEED_PRINT_WORD_HEX
+  1727                                  %define NEED_PRINT_WORD_HEX
+  1728                                  %endif
+  1729                                  
+  1730                                  %endif
+  1731                                  
+  1732                                  %ifdef NEED_PRINT_EDX
+  1733                                  
+  1734                                  print_edx:
+  1735                                  	push eax
+  1736                                          push string_edx
+  1737                                          call print_string
+  1738                                  	push edx
+  1739                                  	call print_word_hex
+  1740                                  	mov  al, 0x0a
+  1741                                  	call putchar
+  1742                                  	pop  eax
+  1743                                  	ret
+  1744                                  
+  1745                                  string_edx:	db "edx=",0
+  1746                                  
+  1747                                  %ifndef NEED_PRINT_WORD_HEX
+  1748                                  %define NEED_PRINT_WORD_HEX
+  1749                                  %endif
+  1750                                  
+  1751                                  %endif
+  1752                                  
+  1753                                  %ifdef NEED_PRINT_ESI
+  1754                                  
+  1755                                  print_esi:
+  1756                                  	push eax
+  1757                                          push string_esi
+  1758                                          call print_string
+  1759                                  	push esi
+  1760                                  	call print_word_hex
+  1761                                  	mov  al, 0x0a
+  1762                                  	call putchar
+  1763                                  	pop  eax
+  1764                                  	ret
+  1765                                  
+  1766                                  string_esi:	db "esi=",0
+  1767                                  
+  1768                                  %ifndef NEED_PRINT_WORD_HEX
+  1769                                  %define NEED_PRINT_WORD_HEX
+  1770                                  %endif
+  1771                                  
+  1772                                  %endif
+  1773                                  
+  1774                                  %ifdef NEED_PRINT_EDI
+  1775                                  
+  1776                                  print_edi:
+  1777                                  	push eax
+  1778                                          push string_edi
+  1779                                          call print_string
+  1780                                  	push edi
+  1781                                  	call print_word_hex
+  1782                                  	mov  al, 0x0a
+  1783                                  	call putchar
+  1784                                  	pop  eax
+  1785                                  	ret
+  1786                                  
+  1787                                  string_edi:	db "edi=",0
+  1788                                  
+  1789                                  %ifndef NEED_PRINT_WORD_HEX
+  1790                                  %define NEED_PRINT_WORD_HEX
+  1791                                  %endif
+  1792                                  
+  1793                                  %endif
+  1794                                  
+  1795                                  %ifdef NEED_PRINT_EBP
+  1796                                  
+  1797                                  print_ebp:
+  1798                                  	push eax
+  1799                                          push string_ebp
+  1800                                          call print_string
+  1801                                  	push ebp
+  1802                                  	call print_word_hex
+  1803                                  	mov  al, 0x0a
+  1804                                  	call putchar
+  1805                                  	pop  eax
+  1806                                  	ret
+  1807                                  
+  1808                                  string_ebp:	db "ebp=",0
+  1809                                  
+  1810                                  %ifndef NEED_PRINT_WORD_HEX
+  1811                                  %define NEED_PRINT_WORD_HEX
+  1812                                  %endif
+  1813                                  
+  1814                                  %endif
+  1815                                  
+  1816                                  %ifdef NEED_PRINT_ESP
+  1817                                  
+  1818                                  print_esp:
+  1819                                  	push eax
+  1820                                          push string_esp
+  1821                                          call print_string
+  1822                                  	push esp
+  1823                                  	add  dword [esp], WORD_SIZE*2	; compensate for pushes
+  1824                                  	call print_word_hex
+  1825                                  	mov  al, 0x0a
+  1826                                  	call putchar
+  1827                                  	pop  eax
+  1828                                  	ret
+  1829                                  
+  1830                                  string_esp:	db "esp=",0
+  1831                                  
+  1832                                  %ifndef NEED_PRINT_WORD_HEX
+  1833                                  %define NEED_PRINT_WORD_HEX
+  1834                                  %endif
+  1835                                  
+  1836                                  %endif
+  1837                                  
+  1838                                  %ifdef NEED_PRINT_WORD_HEX
+  1839                                  
+  1840                                  print_word_hex:
+  1841                                          pushf
+  1842                                          push eax
+  1843                                          push ebx
+  1844                                          push ecx
+  1845                                          push edx
+  1846                                          push esi
+  1847                                          push edi
+  1848                                          push ebp
+  1849                                  
+  1850                                          push string_0x
+  1851                                          call print_string
+  1852                                  
+  1853                                          mov  eax, [esp+WORD_SIZE*9]	; get the number to print
+  1854                                          mov  cl, WORD_SIZE*2
+  1855                                  
+  1856                                  print_word_hex_loop:
+  1857                                          rol  eax, 4
+  1858                                          push eax
+  1859                                          call print_hex1
+  1860                                          dec  cl
+  1861                                          jnz  print_word_hex_loop
+  1862                                  
+  1863                                          pop  ebp
+  1864                                          pop  edi
+  1865                                          pop  esi
+  1866                                          pop  edx
+  1867                                          pop  ecx
+  1868                                          pop  ebx
+  1869                                          pop  eax
+  1870                                          popf
+  1871                                          ret  WORD_SIZE*1
+  1872                                  
+  1873                                  string_0x:	db "0x",0
+  1874                                  
+  1875                                  %ifndef NEED_PRINT_HEX1
+  1876                                  %define NEED_PRINT_HEX1
+  1877                                  %endif
+  1878                                  	
+  1879                                  %ifndef NEED_PRINT_STRING
+  1880                                  %define NEED_PRINT_STRING
+  1881                                  %endif
+  1882                                  	
+  1883                                  %endif
+  1884                                  
+  1885                                  %ifdef NEED_PRINT_HEX1
+  1886                                  
+  1887                                  print_hex1:
+  1888                                          push eax
+  1889                                  
+  1890                                          mov  eax, [esp+WORD_SIZE*2]
+  1891                                          and  al, 0x0f
+  1892                                          cmp  al, 10
+  1893                                          jb   print_hex1_putchar
+  1894                                          add  al, 39		; adjust for a-f
+  1895                                  print_hex1_putchar:
+  1896                                          add  al, 48		; offset for 0-9
+  1897                                          call putchar
+  1898                                  
+  1899                                          pop  eax
+  1900                                          ret  WORD_SIZE*1
+  1901                                  
+  1902                                  %ifndef NEED_PUTCHAR
+  1903                                  %define NEED_PUTCHAR
+  1904                                  %endif
+  1905                                  
+  1906                                  %endif
+  1907                                  
+  1908                                  %ifdef NEED_PRINT_STRING
+  1909                                  
+  1910                                  print_string:
+  1911                                  	push eax
+  1912                                  	push ebx
+  1913                                  	push ecx
+  1914                                  	push edx
+  1915                                  	push esi
+  1916                                          mov  esi, [esp+WORD_SIZE*6]	; get string to print
+  1917                                          movC eax, 0
+  1918                                  
+  1919                                  print_string_loop:
+  1920                                          mov  al, [esi]
+  1921                                          cmp  al, 0
+  1922                                          je   print_string_loop_done
+  1923                                          call putchar
+  1924                                          inc  esi
+  1925                                          jmp  print_string_loop
+  1926                                  
+  1927                                  print_string_loop_done:
+  1928                                  	pop  esi
+  1929                                  	pop  edx
+  1930                                  	pop  ecx
+  1931                                  	pop  ebx
+  1932                                  	pop  eax
+  1933                                  	ret  WORD_SIZE*1
+  1934                                  
+  1935                                  %ifndef NEED_PUTCHAR
+  1936                                  %define NEED_PUTCHAR
+  1937                                  %endif
+  1938                                  
+  1939                                  %ifndef CALLEE_SAVE_EBX_ECX_EDX
+  1940                                  %define CALLEE_SAVE_EBX_ECX_EDX
+  1941                                  %endif
+  1942                                  
+  1943                                  %endif
+  1944                                  
+  1945                                  %ifdef NEED_GETCHAR
+  1946                                  
+  1947                                  getchar:
+  1948                                  %ifdef CALLEE_SAVE_EBX_ECX_EDX
+  1949                                  	push ebx
+  1950                                  	push ecx
+  1951                                  	push edx
+  1952                                  %endif
+  1953                                  	movC ebx, 0		; ebx = 0 = STDIN
+  1954                                  	push ebx		; buffer to read byte
+  1955                                  	movC edx, 1		; edx = 1 = number of bytes to read
+  1956                                  	mov  ecx, esp		; to the stack
+  1957                                  	movC eax, SYS_READ
+  1958                                  %ifdef NEED_PUTCHAR
+  1959                                  	jmp  call_kernel
+  1960                                  %endif
+  1961                                  %ifndef NEED_CALL_KERNEL
+  1962                                  %define NEED_CALL_KERNEL
+  1963                                  %endif
+  1964                                  
+  1965                                  %endif
+  1966                                  
+  1967                                  %ifdef NEED_PUTCHAR
+  1968                                  
+  1969                                  putchar:
+  1970                                  %ifdef CALLEE_SAVE_EBX_ECX_EDX
+  1971                                  	push ebx
+  1972                                  	push ecx
+  1973                                  	push edx
+  1974                                  %endif
+  1975                                  	push eax
+  1976                                  	movC ebx, STDOUT	; ebx = 1 = STDOUT
+  1977                                  	mov  edx, ebx		; edx = 1 = number of bytes to write
+  1978                                  	mov  ecx, esp		; from the stack
+  1979                                  	movC eax, SYS_WRITE
+  1980                                  %ifndef NEED_CALL_KERNEL
+  1981                                  %define NEED_CALL_KERNEL
+  1982                                  %endif
+  1983                                  
+  1984                                  %endif
+  1985                                  
+  1986                                  %ifdef NEED_CALL_KERNEL
+  1987                                  
+  1988                                  call_kernel:
+  1989                                  	CALL_KERNEL
+  1990                                  	pop  eax
+  1991                                  %ifdef CALLEE_SAVE_EBX_ECX_EDX
+  1992                                  	pop  edx
+  1993                                  	pop  ecx
+  1994                                  	pop  ebx
+  1995                                  %endif
+  1996                                  	ret
+  1997                                  
+  1998                                  %endif
+  1999                                  
+  2000                                  ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+  2001                                  
+  2002                                  ;;; ######################################## End of RVM
+  2003                                  
+  2004                                  filesize      equ     $ - $$

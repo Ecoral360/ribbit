@@ -2,7 +2,7 @@
 (define main
   (let* ((x (reactive 40))
         (y (rbind (lambda () (+ (x) 4))
-                  (list x))))
+                  x)))
     (<div>
       "y: " y " is 4 + " x "."
       (<p> "x is " x)

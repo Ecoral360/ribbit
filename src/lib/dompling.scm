@@ -12,7 +12,7 @@
 
 (cond-expand
   ((host js)
-    (define-primitive (query-selector query)
+   (define-primitive (query-selector query)
       (use foreign scm2str)
       "() => push(foreign(document.querySelector(scm2str(pop())))),"
       )
@@ -92,6 +92,11 @@
     (define-primitive (js-get element property)
       (use scm2host host2scm)
       "prim2((property, element) => host2scm(element[1][scm2host(property)])),"
+      )
+
+    (define-primitive (js-call element function-name args)
+      (use scm2host host2scm)
+      "prim3((args, function_name, element) => host2scm(element[1][scm2host(function_name)](...scm2host(args)))),"
       )
 
     (define-primitive (js-set element property value)

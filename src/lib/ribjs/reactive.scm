@@ -10,7 +10,7 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
   )
 
 (define (reactive value)
-  (let ((callbacks '()))
+  (let ((callbacks '()) (event-listeners '()))
 	(lambda args
 	  (if (null? args)
 		value
@@ -25,8 +25,20 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
 				((equal? method '$add-listener)
 				 (set! callbacks (append callbacks (list1 (car args)))))
 
+				((equal? method '$add-event-listener)
+				 (set! event-listeners (append event-listeners (list (car args)))))
+
 				((equal? method '$reactive-type)
 				 '$reactive-variable$)
+
+				
+				((equal? method '$send-event)
+				 (let ((event-name (car args))
+					   (new-value (cadr args))
+					   (event-args (cddr args)))
+				   (set! value new-value)
+				   (for-each (lambda (event-listener) (event-listener event-name event-args)) event-listeners)
+				   ))
 
 				(else (error "Unknown method " method))
 				)
@@ -43,12 +55,14 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
 		  ))
 	  )))
 
+(define (reactive-list list-value)
+  )
 
-(define (reactive-list value)
+(define (reactive-list-1 value)
   (if (not (or (null? value) (pair? value)))
 	(error "only a list can be inside a reactive-list")
 	)
-  (let ((callbacks '()) (list-listeners '()))
+  (let ((callbacks '()) (list-listeners '()) (event-listeners '()))
 	;; a list-listener is a function of the form: (lambda (method-name args) ...)
 	(lambda args
 	  (if (null? args)
@@ -67,10 +81,21 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
 				((equal? method '$add-list-listener)
 				 (set! list-listeners (append list-listeners (list (car args)))))
 
+				((equal? method '$add-event-listener)
+				 (set! list-listeners (append list-listeners (list (car args)))))
+
 				((equal? method '$append)
 				 (set! value (append value (list (car args))))
 				 (for-each (lambda (list-listener) (list-listener '$append (list (car args)))) list-listeners)
 				 )
+
+				((equal? method '$send-event)
+				 (let ((event-name (car args))
+					   (new-value (cdr args))
+					   (args (cddr args)))
+				   (set! value new-value)
+				   (for-each (lambda (event-listener) (event-listener event-name args)) event-listeners)
+				   ))
 
 				((equal? method '$reactive-type)
 				 '$reactive-list$)
@@ -145,19 +170,17 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
 	  (lambda (new-value)
 		(reactive-mapper (map f new-value))
 		))
-	(if (equal? (reactive-list '$reactive-type) '$reactive-list$)
-	  (reactive-list
-		'$add-list-listener
-		(lambda (method args)
-		  (cond
-			((equal? method '$append)
-			 (reactive-mapper (append (reactive-mapper) (list (f (car args))))))
-			)
-		  ))
-	  )
+	(reactive-list
+	  '$add-event-listener
+	  (lambda (method args)
+		(cond
+		  ((equal? method '$append)
+		   (reactive-mapper (append (reactive-mapper) (list (f (car args))))))
+		  )
+		))
+
 	(rbind reactive-mapper reactive-mapper)
-	)
-  )
+	))
 
 (define (zip list1 list2)
   (let ((el1 (if (null? list1) '() (car list1)))
@@ -201,7 +224,7 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
 (define (rlist-tail reactive-list i)
   (let ((reactive-tail 
 		  (rbind (lambda ()
-				   (if (>= i (list-length (reactive-list)))
+				   (if (>= i (length (reactive-list)))
 					 ; if i is greater than the length of the list, return the whole list
 					 (reactive-list)                    
 					 (list-tail (reactive-list) i))
@@ -213,7 +236,7 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
 (define (rlist-ref reactive-list i)
   (let ((reactive-ref 
 		  (rbind (lambda ()
-				   (if (>= i (list-length (reactive-list)))
+				   (if (>= i (length (reactive-list)))
 					 ; if i is greater than the length of the list, return '()
 					 '()
 					 (list-ref (reactive-list) i))
@@ -223,10 +246,6 @@ They are, internally, a pair of the form '($reactive$ value id), where value is 
 	))
 
 
-(define (rmap-lazy)
-  )
-
 (define (rappend! reactive-list new-element)
-  (reactive-list '$append new-element)
+  (reactive-list '$send-event '$append (append (reactive-list) (list new-element)) new-element)
   )
-
