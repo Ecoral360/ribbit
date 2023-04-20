@@ -12,6 +12,17 @@
 
 (cond-expand
   ((host js)
+
+	(define-primitive (current-path-name)
+	  (use str2scm)
+	  "() => push(str2scm(window.location.pathname)),"
+	  )
+	
+	(define-primitive (query-param name)
+	  (use host2scm scm2str)
+	  "prim1(name => host2scm(new URLSearchParams(window.location.search).get(scm2str(name)))),"
+	  )
+
    (define-primitive (query-selector query)
       (use foreign scm2str)
       "() => push(foreign(document.querySelector(scm2str(pop())))),"

@@ -4,11 +4,12 @@
   (append-node (element-by-id "app") main)
   )
 
+
 (define (global-style style)
   (append-node (query-selector "head") (<style> style))
   )
 
-(define (set-title title) 
+(define (set-title! title) 
   (set-text (query-selector "head > title") title)
             )
 
